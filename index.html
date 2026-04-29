@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>V4 Tracking Hub</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/tesseract.js@v5.0.2/dist/tesseract.min.js"></script>
+    <style>
+        body { background-color: #0b0e14; color: #cbd5e1; font-family: sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // PUT YOUR NEW GOOGLE SCRIPT URL HERE
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz0utfE600ZRFtq6njQFnfUDTkiB2cmoO2y0KuzBx2TZs7S6eW6NpWYiIUbH7BOr38C/exec";
+
+        function App() {
+            const [orderId, setOrderId] = useState('');
+            const [file, setFile] = useState(null);
+            const [base64Image, setBase64Image] = useState(null);
+            const [extracted, setExtracted] = useState({ trk: '', courier: '', status: 'Waiting...' });
+            const [status, setStatus] = useState('idle');
+            const [records, setRecords] = useState([]);
+            const fileInputRef = useRef(null);
+
+            const loadHistory = async () => {
+                try {
+                    const res = await fetch(GOOGLE_SCRIPT_URL);
+                    const data = await res.json();
+                    if (Array.isArray(data)) setRecords(data);
+                } catch (e) { console.log("Connecting..."); }
+            };
+
+            useEffect(() => { loadHistory(); }, []);
+
+            const handleFileUpload = async (e) => {
+                const upFile = e.target.files[0];
+                if (!upFile) return;
+                setFile(upFile); setStatus('scanning');
+                
+                const reader = new FileReader();
+                reader.onloadend = () => setBase64Image(reader.result);
+                reader.readAsDataURL(upFile);
+
+                try {
+                    // 1. OCR Scan
+                    const { data: { text } } = await Tesseract.recognize(URL.createObjectURL(upFile), 'eng');
+                    const cleanText = text.toUpperCase().replace(/\n/g, ' ');
+                    
+                    let trk = "Not Found";
+                    const match = cleanText.match(/(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/i);
+                    if (match) trk = match[1].replace(/[^0-9]/g, '').substring(0, 12);
+
+                    setExtracted({ trk, courier: cleanText.includes("FEDEX") ? "FedEx" : "Courier", status: 'Checking API...' });
+
+                    // 2. Immediate 17track Lookup
+                    if (trk !== "Not Found") {
+                        const apiRes = await fetch(`${GOOGLE_SCRIPT_URL}?action=getStatus&num=${trk}`);
+                        const liveStatus = await apiRes.text();
+                        setExtracted(prev => ({ ...prev, status: liveStatus }));
+                    }
+                    setStatus('ready');
+                } catch (err) { setStatus('idle'); }
+            };
+
+            const handleSync = async () => {
+                setStatus('syncing');
+                const payload = { orderId, trackingNumber: extracted.trk, courier: extracted.courier, status: extracted.status, image: base64Image };
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+                    setStatus('success');
+                    setTimeout(() => { 
+                        setOrderId(''); setFile(null); setExtracted({ trk: '', courier: '', status: 'Waiting...' }); setStatus('idle');
+                        loadHistory();
+                    }, 1500);
+                } catch (error) { setStatus('ready'); }
+            };
+
+            return (
+                <div className="min-h-screen p-6 flex flex-col items-center gap-10">
+                    <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
+                        <h1 className="text-xl font-black mb-6 border-b border-slate-800 pb-4">V4 SCANNER + LIVE STATUS</h1>
+                        <div className="space-y-4">
+                            <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ORDER ID" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-blue-500 font-bold"/>
+                            <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-xl p-10 text-center cursor-pointer hover:border-blue-600 bg-[#0b0e14]/50">
+                                <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                                <p className={file ? "text-blue-400 font-bold" : "text-slate-500"}>{file ? file.name : "UPLOAD LABEL"}</p>
+                            </div>
+                            {status !== 'idle' && (
+                                <div className="bg-[#0b0e14] p-4 rounded-xl border border-slate-800 grid grid-cols-2 gap-2">
+                                    <div><p className="text-[10px] text-slate-500 uppercase">Tracking</p><p className="font-mono text-white text-sm">{extracted.trk}</p></div>
+                                    <div className="text-right"><p className="text-[10px] text-slate-500 uppercase">Live Status</p><p className="text-blue-500 font-black italic">{extracted.status}</p></div>
+                                </div>
+                            )}
+                            <button onClick={handleSync} disabled={status !== 'ready' || !orderId} className={`w-full py-4 rounded-xl font-black transition-all ${status==='ready'?'bg-blue-600 shadow-lg shadow-blue-600/20':'bg-slate-800 text-slate-600'}`}>
+                                {status === 'syncing' ? 'FEEDING DATA...' : 'CONFIRM & SYNC'}
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="w-full max-w-2xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
+                        <h2 className="text-xs font-black text-slate-500 mb-4 tracking-widest">MASTER LOG ({records.length})</h2>
+                        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                            {records.map((rec, i) => (
+                                <div key={i} className="flex justify-between items-center bg-[#0b0e14] p-4 rounded-xl border border-slate-800">
+                                    <div><p className="text-white font-bold text-sm">{rec.orderId}</p><p className="text-[10px] text-slate-500 font-mono">{rec.trackingNumber}</p></div>
+                                    <div className="flex gap-4 items-center">
+                                        <span className="text-[9px] font-black uppercase text-blue-500 bg-blue-500/5 px-2 py-1 rounded border border-blue-500/20">{rec.status}</span>
+                                        <a href={rec.link} target="_blank">🖼️</a>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.
