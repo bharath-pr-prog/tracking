@@ -21,12 +21,11 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // PASTE YOUR SCRIPT URL HERE
+        // PASTE YOUR GOOGLE SCRIPT URL HERE
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec";
 
         function App() {
             const [orderId, setOrderId] = useState('');
-            // Changed from single file to array of files
             const [files, setFiles] = useState([]);
             const [base64Images, setBase64Images] = useState([]);
             const [extracted, setExtracted] = useState({ trk: '', courier: '' });
@@ -58,21 +57,37 @@
                 }
             };
 
+            // UPGRADED PARSER: Finds ALL tracking numbers instead of stopping at the first one
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
-                let trk = "Not Found", courier = "Unknown";
+                let courier = "Unknown";
                 if (cleanText.includes("FEDEX")) courier = "FedEx Ground";
                 if (cleanText.includes("UPS") || cleanText.includes("1Z")) courier = "UPS";
-                const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/i;
-                const match = cleanText.match(fedexRegex);
-                if (match) {
+                
+                // The 'g' at the end makes it a Global search (finds all)
+                const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
+                const matches = [...cleanText.matchAll(fedexRegex)];
+                
+                let foundTrks = [];
+                matches.forEach(match => {
                     const digits = match[1].replace(/[^0-9]/g, '');
-                    if (digits.length >= 12) trk = digits.substring(0, 12);
-                }
-                return { trk, courier: (trk !== "Not Found" && courier === "Unknown") ? "FedEx Ground" : courier };
+                    if (digits.length >= 12) {
+                        foundTrks.push(digits.substring(0, 12));
+                    }
+                });
+
+                // Remove duplicates in case the same tracking number appears twice on one label
+                let uniqueTrks = [...new Set(foundTrks)];
+
+                // Join multiple tracking numbers with a comma
+                let finalTrkString = uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found";
+
+                return { 
+                    trk: finalTrkString, 
+                    courier: (uniqueTrks.length > 0 && courier === "Unknown") ? "FedEx Ground" : courier 
+                };
             };
 
-            // NEW MULTI-FILE UPLOAD LOGIC
             const handleFileUpload = async (e) => {
                 const upFiles = Array.from(e.target.files);
                 if (upFiles.length === 0) return;
@@ -84,9 +99,7 @@
                     let allBase64 = [];
                     let combinedText = "";
 
-                    // Process each file one by one
                     for (let f of upFiles) {
-                        // 1. Get Base64
                         const base64 = await new Promise((resolve) => {
                             const reader = new FileReader();
                             reader.onloadend = () => resolve(reader.result);
@@ -94,7 +107,6 @@
                         });
                         allBase64.push(base64);
 
-                        // 2. Scan Text
                         const { data: { text } } = await Tesseract.recognize(URL.createObjectURL(f), 'eng');
                         combinedText += text + " \n";
                     }
@@ -117,7 +129,6 @@
             const handleSync = async () => {
                 setStatus('syncing');
                 
-                // SEND ARRAY OF IMAGES NOW
                 const payload = { 
                     orderId, 
                     trackingNumber: extracted.trk, 
@@ -168,7 +179,6 @@
                             </div>
 
                             <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-12 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
-                                {/* MULTIPLE TAG ADDED HERE */}
                                 <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
                                 {files.length > 0 ? (
                                     <p className="text-blue-400 font-black">{files.length} Document(s) Selected</p>
@@ -179,7 +189,7 @@
 
                             {status !== 'idle' && (
                                 <div className="bg-[#0b0e14] p-5 rounded-2xl border border-slate-800 grid grid-cols-2 gap-4 animate-pulse">
-                                    <div><p className="text-[10px] text-slate-500 font-bold uppercase">Tracking</p><p className="font-mono text-white font-bold">{extracted.trk || '...'}</p></div>
+                                    <div><p className="text-[10px] text-slate-500 font-bold uppercase">Tracking</p><p className="font-mono text-white font-bold text-xs">{extracted.trk || '...'}</p></div>
                                     <div className="text-right"><p className="text-[10px] text-slate-500 font-bold uppercase">Courier</p><p className="text-blue-500 font-black italic">{extracted.courier || '...'}</p></div>
                                 </div>
                             )}
@@ -211,7 +221,6 @@
                                         <div className="flex items-center gap-4 flex-wrap justify-end">
                                             <span className="text-[9px] font-black uppercase text-blue-500/80 bg-blue-500/5 px-3 py-1.5 rounded-lg border border-blue-500/10">{rec.courier}</span>
                                             
-                                            {/* DYNAMIC MULTIPLE DOWNLOAD BUTTONS */}
                                             {rec.link && rec.link !== "No Image" && (
                                                 <div className="flex gap-2 flex-wrap">
                                                     {rec.link.split(" , ").map((url, idx, arr) => (
