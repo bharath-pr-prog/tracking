@@ -9,7 +9,6 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/tesseract.js@v5.0.2/dist/tesseract.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
     <style>
         body { background-color: #0b0e14; color: #cbd5e1; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         .custom-scrollbar::-webkit-scrollbar { width: 5px; }
@@ -22,23 +21,22 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // UPDATED URL
+        // PASTE YOUR SCRIPT URL HERE
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec";
 
         function App() {
             const [orderId, setOrderId] = useState('');
-            const [file, setFile] = useState(null);
-            const [base64Image, setBase64Image] = useState(null);
+            // Changed from single file to array of files
+            const [files, setFiles] = useState([]);
+            const [base64Images, setBase64Images] = useState([]);
             const [extracted, setExtracted] = useState({ trk: '', courier: '' });
             const [status, setStatus] = useState('idle');
             const [dbRecords, setDbRecords] = useState([]);
             const fileInputRef = useRef(null);
 
-            // NEW STATE VARIABLES FOR FINANCIALS
             const [productCost, setProductCost] = useState('');
             const [returnFee, setReturnFee] = useState('');
 
-            // Fetch history from Google Sheet
             const loadDatabase = async () => {
                 try {
                     const response = await fetch(GOOGLE_SCRIPT_URL);
@@ -49,14 +47,14 @@
 
             useEffect(() => { loadDatabase(); }, []);
 
-            // Helper function to turn Google Drive links into Direct Download links safely
             const getDirectDownload = (url) => {
-                if (!url || !url.includes('/d/')) return url;
+                let cleanUrl = url.trim();
+                if (!cleanUrl || !cleanUrl.includes('/d/')) return cleanUrl;
                 try {
-                    const fileId = url.split('/d/')[1].split('/')[0];
+                    const fileId = cleanUrl.split('/d/')[1].split('/')[0];
                     return `https://drive.google.com/uc?export=download&id=${fileId}`;
                 } catch (e) {
-                    return url; 
+                    return cleanUrl; 
                 }
             };
 
@@ -74,20 +72,41 @@
                 return { trk, courier: (trk !== "Not Found" && courier === "Unknown") ? "FedEx Ground" : courier };
             };
 
+            // NEW MULTI-FILE UPLOAD LOGIC
             const handleFileUpload = async (e) => {
-                const upFile = e.target.files[0];
-                if (!upFile) return;
-                setFile(upFile); setStatus('scanning');
-                const reader = new FileReader();
-                reader.onloadend = () => setBase64Image(reader.result);
-                reader.readAsDataURL(upFile);
+                const upFiles = Array.from(e.target.files);
+                if (upFiles.length === 0) return;
+                
+                setFiles(upFiles); 
+                setStatus('scanning');
+                
                 try {
-                    const { data: { text } } = await Tesseract.recognize(URL.createObjectURL(upFile), 'eng');
-                    setExtracted(parseLabelText(text)); setStatus('ready');
-                } catch (err) { setStatus('idle'); }
+                    let allBase64 = [];
+                    let combinedText = "";
+
+                    // Process each file one by one
+                    for (let f of upFiles) {
+                        // 1. Get Base64
+                        const base64 = await new Promise((resolve) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.readAsDataURL(f);
+                        });
+                        allBase64.push(base64);
+
+                        // 2. Scan Text
+                        const { data: { text } } = await Tesseract.recognize(URL.createObjectURL(f), 'eng');
+                        combinedText += text + " \n";
+                    }
+
+                    setBase64Images(allBase64);
+                    setExtracted(parseLabelText(combinedText)); 
+                    setStatus('ready');
+                } catch (err) { 
+                    setStatus('idle'); 
+                }
             };
 
-            // CALCULATE REFUND AUTOMATICALLY
             const calculateRefund = () => {
                 const cost = parseFloat(productCost) || 0;
                 const fee = parseFloat(returnFee) || 0;
@@ -98,12 +117,12 @@
             const handleSync = async () => {
                 setStatus('syncing');
                 
-                // ADDED NEW FIELDS TO THE PAYLOAD
+                // SEND ARRAY OF IMAGES NOW
                 const payload = { 
                     orderId, 
                     trackingNumber: extracted.trk, 
                     courier: extracted.courier, 
-                    image: base64Image,
+                    images: base64Images, 
                     productCost: parseFloat(productCost) || 0,
                     returnFee: parseFloat(returnFee) || 0,
                     refundAmount: parseFloat(calculateRefund())
@@ -113,9 +132,9 @@
                     await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
                     setStatus('success');
                     setTimeout(() => { 
-                        // RESET ALL FIELDS INCLUDING NEW ONES
                         setOrderId(''); setProductCost(''); setReturnFee(''); 
-                        setFile(null); setExtracted({ trk: '', courier: '' }); setStatus('idle');
+                        setFiles([]); setBase64Images([]); setExtracted({ trk: '', courier: '' }); 
+                        setStatus('idle');
                         loadDatabase(); 
                     }, 1500);
                 } catch (error) { setStatus('ready'); }
@@ -123,8 +142,6 @@
 
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
-                    
-                    {/* TOP SCANNER CARD */}
                     <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
                         <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
                             <h1 className="text-xl font-black text-white tracking-widest italic">LABEL SCANNER</h1>
@@ -132,10 +149,8 @@
                         </div>
 
                         <div className="space-y-6">
-                            {/* ORDER ID */}
                             <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ENTER ORDER ID" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-700"/>
 
-                            {/* NEW FINANCIAL INPUTS */}
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
                                     <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Product Cost</label>
@@ -147,15 +162,19 @@
                                 </div>
                             </div>
 
-                            {/* CALCULATED REFUND DISPLAY */}
                             <div className="bg-[#0b0e14] border border-emerald-900/50 rounded-2xl p-5 flex justify-between items-center">
                                 <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Confirmed Refund</span>
                                 <span className="text-2xl text-emerald-400 font-black">${calculateRefund()}</span>
                             </div>
 
                             <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-12 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
-                                <input type="file" ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
-                                {file ? <p className="text-blue-400 font-black">{file.name}</p> : <p className="text-slate-500 text-xs font-black uppercase tracking-widest">Select Document</p>}
+                                {/* MULTIPLE TAG ADDED HERE */}
+                                <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
+                                {files.length > 0 ? (
+                                    <p className="text-blue-400 font-black">{files.length} Document(s) Selected</p>
+                                ) : (
+                                    <p className="text-slate-500 text-xs font-black uppercase tracking-widest text-center">Select Document(s)<br/><span className="text-[9px]">(You can select multiple)</span></p>
+                                )}
                             </div>
 
                             {status !== 'idle' && (
@@ -171,7 +190,6 @@
                         </div>
                     </div>
 
-                    {/* RECORDS DATABASE CARD */}
                     <div className="w-full max-w-2xl bg-[#161b22] border border-slate-800 rounded-[2.5rem] p-8 shadow-2xl">
                         <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
                             <h2 className="text-sm font-black text-slate-400 uppercase tracking-[0.3em]">RECORDS DATABASE</h2>
@@ -182,7 +200,6 @@
                             {dbRecords.length === 0 ? (
                                 <div className="text-center py-20">
                                     <p className="text-slate-800 font-black tracking-[0.2em] italic">DATABASE EMPTY</p>
-                                    <p className="text-[10px] text-slate-700 mt-2">Awaiting first scan of this session</p>
                                 </div>
                             ) : (
                                 dbRecords.map((rec, i) => (
@@ -191,20 +208,26 @@
                                             <p className="text-white font-black text-sm">{rec.orderId}</p>
                                             <p className="text-[10px] text-slate-500 font-mono mt-1 font-bold">{rec.trackingNumber}</p>
                                         </div>
-                                        <div className="flex items-center gap-6">
+                                        <div className="flex items-center gap-4 flex-wrap justify-end">
                                             <span className="text-[9px] font-black uppercase text-blue-500/80 bg-blue-500/5 px-3 py-1.5 rounded-lg border border-blue-500/10">{rec.courier}</span>
                                             
-                                            {rec.link && (
-                                                <a 
-                                                    href={getDirectDownload(rec.link)} 
-                                                    className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all shadow-md flex items-center gap-1.5"
-                                                >
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
-                                                        <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-                                                        <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-                                                    </svg>
-                                                    Download
-                                                </a>
+                                            {/* DYNAMIC MULTIPLE DOWNLOAD BUTTONS */}
+                                            {rec.link && rec.link !== "No Image" && (
+                                                <div className="flex gap-2 flex-wrap">
+                                                    {rec.link.split(" , ").map((url, idx, arr) => (
+                                                        <a 
+                                                            key={idx}
+                                                            href={getDirectDownload(url)} 
+                                                            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all shadow-md flex items-center gap-1.5"
+                                                        >
+                                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                                                                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                                                                <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+                                                            </svg>
+                                                            {arr.length > 1 ? `Label ${idx + 1}` : 'Download'}
+                                                        </a>
+                                                    ))}
+                                                </div>
                                             )}
                                         </div>
                                     </div>
@@ -218,6 +241,6 @@
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
-    </script>  
+    </script>
 </body>
 </html>
