@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Return Tracker Pro</title>
+    <title>Return Tracker Pro - Secure</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/tesseract.js@v5.0.2/dist/tesseract.min.js"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body { background-color: #0b0e14; color: #cbd5e1; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         .custom-scrollbar::-webkit-scrollbar { width: 5px; }
@@ -21,30 +22,85 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // PASTE YOUR GOOGLE SCRIPT URL HERE
-        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec";
+        // ====================================================================
+        // ⚠️ PASTE YOUR LINKS HERE ⚠️
+        // ====================================================================
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec"; 
+        
+        const GOOGLE_CLIENT_ID = "172824137140-2hct598csr472e09gm7emaf7b5c59c38.apps.googleusercontent.com"; 
+        // ====================================================================
 
         function App() {
+            // Security States
+            const [isAuth, setIsAuth] = useState(false);
+            const [token, setToken] = useState(null);
+            const [authError, setAuthError] = useState("");
+            const [userEmail, setUserEmail] = useState("");
+
+            // App States
             const [orderId, setOrderId] = useState('');
             const [files, setFiles] = useState([]);
             const [base64Images, setBase64Images] = useState([]);
             const [extracted, setExtracted] = useState({ trk: '', courier: '' });
             const [status, setStatus] = useState('idle');
             const [dbRecords, setDbRecords] = useState([]);
-            const fileInputRef = useRef(null);
-
             const [productCost, setProductCost] = useState('');
             const [returnFee, setReturnFee] = useState('');
+            const fileInputRef = useRef(null);
 
-            const loadDatabase = async () => {
+            // --- THE LOGIN BOUNCER ---
+            const handleCredentialResponse = async (response) => {
+                const jwtToken = response.credential;
+                
+                // Decode token just to get the email for our welcome message
+                const payload = JSON.parse(atob(jwtToken.split('.')[1]));
+                const email = payload.email;
+
+                setAuthError("Verifying with database...");
+
                 try {
-                    const response = await fetch(GOOGLE_SCRIPT_URL);
+                    // Send token to Google Script to check if they are on the Guest List
+                    const res = await fetch(`${GOOGLE_SCRIPT_URL}?token=${jwtToken}`);
+                    const data = await res.json();
+
+                    if (data.error) {
+                        setAuthError(`Access Denied: ${email} is not on the authorized list.`);
+                    } else {
+                        // SUCCESS! Let them in!
+                        setToken(jwtToken);
+                        setUserEmail(email);
+                        setDbRecords(Array.isArray(data) ? data : []);
+                        setIsAuth(true);
+                        setAuthError("");
+                    }
+                } catch (e) {
+                    setAuthError("Failed to connect to the secure database.");
+                }
+            };
+
+            useEffect(() => {
+                // Load the Google Login Button if not authorized
+                if (!isAuth && window.google) {
+                    window.google.accounts.id.initialize({
+                        client_id: GOOGLE_CLIENT_ID,
+                        callback: handleCredentialResponse
+                    });
+                    window.google.accounts.id.renderButton(
+                        document.getElementById("googleSignInDiv"),
+                        { theme: "outline", size: "large", text: "continue_with" }
+                    );
+                }
+            }, [isAuth]);
+
+            // --- APP FUNCTIONS ---
+            const loadDatabase = async () => {
+                if (!token) return;
+                try {
+                    const response = await fetch(`${GOOGLE_SCRIPT_URL}?token=${token}`);
                     const data = await response.json();
                     if (Array.isArray(data)) setDbRecords(data);
                 } catch (e) { console.log("Connecting to Database..."); }
             };
-
-            useEffect(() => { loadDatabase(); }, []);
 
             const getDirectDownload = (url) => {
                 let cleanUrl = url.trim();
@@ -52,34 +108,25 @@
                 try {
                     const fileId = cleanUrl.split('/d/')[1].split('/')[0];
                     return `https://drive.google.com/uc?export=download&id=${fileId}`;
-                } catch (e) {
-                    return cleanUrl; 
-                }
+                } catch (e) { return cleanUrl; }
             };
 
-            // UPGRADED PARSER: Finds ALL tracking numbers instead of stopping at the first one
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
                 let courier = "Unknown";
                 if (cleanText.includes("FEDEX")) courier = "FedEx Ground";
                 if (cleanText.includes("UPS") || cleanText.includes("1Z")) courier = "UPS";
                 
-                // The 'g' at the end makes it a Global search (finds all)
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
                 
                 let foundTrks = [];
                 matches.forEach(match => {
                     const digits = match[1].replace(/[^0-9]/g, '');
-                    if (digits.length >= 12) {
-                        foundTrks.push(digits.substring(0, 12));
-                    }
+                    if (digits.length >= 12) foundTrks.push(digits.substring(0, 12));
                 });
 
-                // Remove duplicates in case the same tracking number appears twice on one label
                 let uniqueTrks = [...new Set(foundTrks)];
-
-                // Join multiple tracking numbers with a comma
                 let finalTrkString = uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found";
 
                 return { 
@@ -114,9 +161,7 @@
                     setBase64Images(allBase64);
                     setExtracted(parseLabelText(combinedText)); 
                     setStatus('ready');
-                } catch (err) { 
-                    setStatus('idle'); 
-                }
+                } catch (err) { setStatus('idle'); }
             };
 
             const calculateRefund = () => {
@@ -129,7 +174,9 @@
             const handleSync = async () => {
                 setStatus('syncing');
                 
+                // Add the secure token to the payload!
                 const payload = { 
+                    token: token, 
                     orderId, 
                     trackingNumber: extracted.trk, 
                     courier: extracted.courier, 
@@ -151,12 +198,45 @@
                 } catch (error) { setStatus('ready'); }
             };
 
+            // ==========================================
+            // UI: LOGIN SCREEN (If not authorized)
+            // ==========================================
+            if (!isAuth) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center p-6 bg-[#0b0e14]">
+                        <div className="max-w-md w-full bg-[#161b22] border border-slate-800 rounded-[2rem] p-10 shadow-2xl flex flex-col items-center text-center">
+                            <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mb-6">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="#3b82f6" viewBox="0 0 16 16">
+                                    <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM5 8h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/>
+                                </svg>
+                            </div>
+                            <h1 className="text-2xl font-black text-white tracking-widest uppercase mb-2">Secure Gateway</h1>
+                            <p className="text-slate-500 text-sm mb-8 font-medium">Please sign in with your authorized Google account to access the system.</p>
+                            
+                            <div id="googleSignInDiv" className="mb-4"></div>
+                            
+                            {authError && (
+                                <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                                    <p className="text-red-400 text-xs font-bold leading-relaxed">{authError}</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // ==========================================
+            // UI: MAIN APP (If authorized)
+            // ==========================================
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
                     <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
                         <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
-                            <h1 className="text-xl font-black text-white tracking-widest italic">LABEL SCANNER</h1>
-                            <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full hover:bg-blue-500/10 uppercase">Refresh History</button>
+                            <div>
+                                <h1 className="text-xl font-black text-white tracking-widest italic">LABEL SCANNER</h1>
+                                <p className="text-[10px] text-emerald-400 font-bold mt-1">✓ Securely logged in as {userEmail}</p>
+                            </div>
+                            <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full hover:bg-blue-500/10 uppercase">Refresh</button>
                         </div>
 
                         <div className="space-y-6">
@@ -217,6 +297,7 @@
                                         <div className="flex-1">
                                             <p className="text-white font-black text-sm">{rec.orderId}</p>
                                             <p className="text-[10px] text-slate-500 font-mono mt-1 font-bold">{rec.trackingNumber}</p>
+                                            <p className="text-[8px] text-slate-600 mt-1 uppercase">By: {rec.submittedBy || 'Unknown'}</p>
                                         </div>
                                         <div className="flex items-center gap-4 flex-wrap justify-end">
                                             <span className="text-[9px] font-black uppercase text-blue-500/80 bg-blue-500/5 px-3 py-1.5 rounded-lg border border-blue-500/10">{rec.courier}</span>
