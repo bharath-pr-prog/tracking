@@ -23,7 +23,7 @@
         const { useState, useEffect, useRef } = React;
 
         // ====================================================================
-        // ⚠️ PASTE YOUR LINKS HERE ⚠️
+        // YOUR SECURE LINKS
         // ====================================================================
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec"; 
         const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com"; 
@@ -57,7 +57,6 @@
                     const data = await res.json();
 
                     if (data.error) {
-                        // This uses the debug message from Method 2 in your G-Script
                         setAuthError(`Access Denied: ${data.debug || data.error}`);
                     } else {
                         setToken(jwtToken);
