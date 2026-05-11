@@ -26,7 +26,6 @@
         // ⚠️ PASTE YOUR LINKS HERE ⚠️
         // ====================================================================
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec"; 
-        
         const GOOGLE_CLIENT_ID = "172824137140-2hct598csr472e09gm7emaf7b5c59c38.apps.googleusercontent.com"; 
         // ====================================================================
 
@@ -48,67 +47,75 @@
             const [returnFee, setReturnFee] = useState('');
             const fileInputRef = useRef(null);
 
-            // --- THE LOGIN BOUNCER ---
+            // --- THE LOGIN HANDLER (With Emergency Debug) ---
             const handleCredentialResponse = async (response) => {
                 const jwtToken = response.credential;
-                
-                // Decode token just to get the email for our welcome message
-                const payload = JSON.parse(atob(jwtToken.split('.')[1]));
-                const email = payload.email;
-
-                setAuthError("Verifying with database...");
+                setAuthError("Verifying with secure database...");
 
                 try {
-                    // Send token to Google Script to check if they are on the Guest List
                     const res = await fetch(`${GOOGLE_SCRIPT_URL}?token=${jwtToken}`);
                     const data = await res.json();
 
                     if (data.error) {
-                        setAuthError(`Access Denied: ${email} is not on the authorized list.`);
+                        // This uses the debug message from Method 2 in your G-Script
+                        setAuthError(`Access Denied: ${data.debug || data.error}`);
                     } else {
-                        // SUCCESS! Let them in!
                         setToken(jwtToken);
-                        setUserEmail(email);
+                        setUserEmail(data[0]?.submittedBy || "Authorized User");
                         setDbRecords(Array.isArray(data) ? data : []);
                         setIsAuth(true);
                         setAuthError("");
                     }
                 } catch (e) {
-                    setAuthError("Failed to connect to the secure database.");
+                    setAuthError("Connection Failed: Check if your Google Script URL is correct and deployed as a 'Web App'.");
                 }
             };
 
             useEffect(() => {
-                // Load the Google Login Button if not authorized
-                if (!isAuth && window.google) {
-                    window.google.accounts.id.initialize({
-                        client_id: GOOGLE_CLIENT_ID,
-                        callback: handleCredentialResponse
-                    });
-                    window.google.accounts.id.renderButton(
-                        document.getElementById("googleSignInDiv"),
-                        { theme: "outline", size: "large", text: "continue_with" }
-                    );
+                if (isAuth) return;
+                
+                const renderButton = () => {
+                    if (window.google && document.getElementById("googleSignInDiv")) {
+                        window.google.accounts.id.initialize({
+                            client_id: GOOGLE_CLIENT_ID,
+                            callback: handleCredentialResponse
+                        });
+                        window.google.accounts.id.renderButton(
+                            document.getElementById("googleSignInDiv"),
+                            { theme: "outline", size: "large", text: "continue_with" }
+                        );
+                    }
+                };
+
+                // Retry logic to ensure Google script is loaded
+                if (window.google) {
+                    renderButton();
+                } else {
+                    const timer = setInterval(() => {
+                        if (window.google) {
+                            clearInterval(timer);
+                            renderButton();
+                        }
+                    }, 200);
                 }
             }, [isAuth]);
 
-            // --- APP FUNCTIONS ---
+            // --- APP LOGIC ---
             const loadDatabase = async () => {
                 if (!token) return;
                 try {
                     const response = await fetch(`${GOOGLE_SCRIPT_URL}?token=${token}`);
                     const data = await response.json();
                     if (Array.isArray(data)) setDbRecords(data);
-                } catch (e) { console.log("Connecting to Database..."); }
+                } catch (e) { console.error("Database sync error"); }
             };
 
             const getDirectDownload = (url) => {
-                let cleanUrl = url.trim();
-                if (!cleanUrl || !cleanUrl.includes('/d/')) return cleanUrl;
+                if (!url || !url.includes('/d/')) return url;
                 try {
-                    const fileId = cleanUrl.split('/d/')[1].split('/')[0];
+                    const fileId = url.split('/d/')[1].split('/')[0];
                     return `https://drive.google.com/uc?export=download&id=${fileId}`;
-                } catch (e) { return cleanUrl; }
+                } catch (e) { return url; }
             };
 
             const parseLabelText = (text) => {
@@ -119,18 +126,11 @@
                 
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
-                
-                let foundTrks = [];
-                matches.forEach(match => {
-                    const digits = match[1].replace(/[^0-9]/g, '');
-                    if (digits.length >= 12) foundTrks.push(digits.substring(0, 12));
-                });
-
+                let foundTrks = matches.map(m => m[1].replace(/[^0-9]/g, '').substring(0, 12)).filter(d => d.length >= 12);
                 let uniqueTrks = [...new Set(foundTrks)];
-                let finalTrkString = uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found";
 
                 return { 
-                    trk: finalTrkString, 
+                    trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", 
                     courier: (uniqueTrks.length > 0 && courier === "Unknown") ? "FedEx Ground" : courier 
                 };
             };
@@ -138,86 +138,59 @@
             const handleFileUpload = async (e) => {
                 const upFiles = Array.from(e.target.files);
                 if (upFiles.length === 0) return;
-                
                 setFiles(upFiles); 
                 setStatus('scanning');
-                
                 try {
                     let allBase64 = [];
                     let combinedText = "";
-
                     for (let f of upFiles) {
-                        const base64 = await new Promise((resolve) => {
+                        const base64 = await new Promise(r => {
                             const reader = new FileReader();
-                            reader.onloadend = () => resolve(reader.result);
+                            reader.onloadend = () => r(reader.result);
                             reader.readAsDataURL(f);
                         });
                         allBase64.push(base64);
-
-                        const { data: { text } } = await Tesseract.recognize(URL.createObjectURL(f), 'eng');
-                        combinedText += text + " \n";
+                        const { data: { text } } = await Tesseract.recognize(f, 'eng');
+                        combinedText += text + " ";
                     }
-
                     setBase64Images(allBase64);
                     setExtracted(parseLabelText(combinedText)); 
                     setStatus('ready');
                 } catch (err) { setStatus('idle'); }
             };
 
-            const calculateRefund = () => {
-                const cost = parseFloat(productCost) || 0;
-                const fee = parseFloat(returnFee) || 0;
-                const refund = cost - fee;
-                return refund > 0 ? refund.toFixed(2) : "0.00";
-            };
-
             const handleSync = async () => {
                 setStatus('syncing');
-                
-                // Add the secure token to the payload!
+                const refund = (parseFloat(productCost) || 0) - (parseFloat(returnFee) || 0);
                 const payload = { 
-                    token: token, 
-                    orderId, 
-                    trackingNumber: extracted.trk, 
-                    courier: extracted.courier, 
-                    images: base64Images, 
-                    productCost: parseFloat(productCost) || 0,
-                    returnFee: parseFloat(returnFee) || 0,
-                    refundAmount: parseFloat(calculateRefund())
+                    token, orderId, trackingNumber: extracted.trk, 
+                    courier: extracted.courier, images: base64Images, 
+                    productCost, returnFee, refundAmount: refund.toFixed(2)
                 };
-
                 try {
                     await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
                     setStatus('success');
                     setTimeout(() => { 
                         setOrderId(''); setProductCost(''); setReturnFee(''); 
                         setFiles([]); setBase64Images([]); setExtracted({ trk: '', courier: '' }); 
-                        setStatus('idle');
-                        loadDatabase(); 
+                        setStatus('idle'); loadDatabase(); 
                     }, 1500);
-                } catch (error) { setStatus('ready'); }
+                } catch (e) { setStatus('ready'); }
             };
 
-            // ==========================================
-            // UI: LOGIN SCREEN (If not authorized)
-            // ==========================================
             if (!isAuth) {
                 return (
                     <div className="min-h-screen flex items-center justify-center p-6 bg-[#0b0e14]">
                         <div className="max-w-md w-full bg-[#161b22] border border-slate-800 rounded-[2rem] p-10 shadow-2xl flex flex-col items-center text-center">
                             <div className="w-16 h-16 bg-blue-600/20 rounded-full flex items-center justify-center mb-6">
-                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="#3b82f6" viewBox="0 0 16 16">
-                                    <path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM5 8h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/>
-                                </svg>
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="#3b82f6" viewBox="0 0 16 16"><path d="M8 1a2 2 0 0 1 2 2v4H6V3a2 2 0 0 1 2-2zm3 6V3a3 3 0 0 0-6 0v4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM5 8h6a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/></svg>
                             </div>
                             <h1 className="text-2xl font-black text-white tracking-widest uppercase mb-2">Secure Gateway</h1>
-                            <p className="text-slate-500 text-sm mb-8 font-medium">Please sign in with your authorized Google account to access the system.</p>
-                            
-                            <div id="googleSignInDiv" className="mb-4"></div>
-                            
+                            <p className="text-slate-500 text-sm mb-8">Sign in with an authorized Google account.</p>
+                            <div id="googleSignInDiv"></div>
                             {authError && (
-                                <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-                                    <p className="text-red-400 text-xs font-bold leading-relaxed">{authError}</p>
+                                <div className="mt-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                                    <p className="text-red-400 text-[10px] font-bold leading-relaxed uppercase tracking-wider">{authError}</p>
                                 </div>
                             )}
                         </div>
@@ -225,104 +198,71 @@
                 );
             }
 
-            // ==========================================
-            // UI: MAIN APP (If authorized)
-            // ==========================================
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
                     <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
                         <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
                             <div>
-                                <h1 className="text-xl font-black text-white tracking-widest italic">LABEL SCANNER</h1>
-                                <p className="text-[10px] text-emerald-400 font-bold mt-1">✓ Securely logged in as {userEmail}</p>
+                                <h1 className="text-xl font-black text-white tracking-widest italic uppercase">Label Scanner</h1>
+                                <p className="text-[9px] text-emerald-400 font-bold mt-1 tracking-tighter">✓ Authorized session active</p>
                             </div>
-                            <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full hover:bg-blue-500/10 uppercase">Refresh</button>
+                            <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full uppercase hover:bg-blue-500/10">Refresh</button>
                         </div>
 
                         <div className="space-y-6">
-                            <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ENTER ORDER ID" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-700"/>
+                            <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ORDER ID" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-800 uppercase tracking-widest"/>
 
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Product Cost</label>
-                                    <input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="$0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-700"/>
+                                    <label className="text-[10px] text-slate-600 font-bold uppercase ml-2">Cost</label>
+                                    <input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold"/>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Return Label Fee</label>
-                                    <input type="number" value={returnFee} onChange={(e) => setReturnFee(e.target.value)} placeholder="$0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-red-500 font-bold placeholder:text-slate-700"/>
+                                    <label className="text-[10px] text-slate-600 font-bold uppercase ml-2">Fee</label>
+                                    <input type="number" value={returnFee} onChange={(e) => setReturnFee(e.target.value)} placeholder="0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-red-500 font-bold"/>
                                 </div>
                             </div>
 
-                            <div className="bg-[#0b0e14] border border-emerald-900/50 rounded-2xl p-5 flex justify-between items-center">
-                                <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Confirmed Refund</span>
-                                <span className="text-2xl text-emerald-400 font-black">${calculateRefund()}</span>
-                            </div>
-
-                            <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-12 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
+                            <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-10 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
                                 <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
                                 {files.length > 0 ? (
-                                    <p className="text-blue-400 font-black">{files.length} Document(s) Selected</p>
+                                    <p className="text-blue-400 font-black tracking-widest uppercase">{files.length} Selected</p>
                                 ) : (
-                                    <p className="text-slate-500 text-xs font-black uppercase tracking-widest text-center">Select Document(s)<br/><span className="text-[9px]">(You can select multiple)</span></p>
+                                    <p className="text-slate-700 text-xs font-black uppercase tracking-widest">Select Documents</p>
                                 )}
                             </div>
 
                             {status !== 'idle' && (
-                                <div className="bg-[#0b0e14] p-5 rounded-2xl border border-slate-800 grid grid-cols-2 gap-4 animate-pulse">
-                                    <div><p className="text-[10px] text-slate-500 font-bold uppercase">Tracking</p><p className="font-mono text-white font-bold text-xs">{extracted.trk || '...'}</p></div>
-                                    <div className="text-right"><p className="text-[10px] text-slate-500 font-bold uppercase">Courier</p><p className="text-blue-500 font-black italic">{extracted.courier || '...'}</p></div>
+                                <div className="bg-[#0b0e14] p-5 rounded-2xl border border-slate-800 grid grid-cols-2 gap-4">
+                                    <div><p className="text-[9px] text-slate-600 font-bold uppercase">Tracking</p><p className="font-mono text-white font-bold text-xs">{extracted.trk || '...'}</p></div>
+                                    <div className="text-right"><p className="text-[9px] text-slate-600 font-bold uppercase">Courier</p><p className="text-blue-500 font-black italic text-xs">{extracted.courier || '...'}</p></div>
                                 </div>
                             )}
 
                             <button onClick={handleSync} disabled={status !== 'ready' || !orderId} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${status==='ready'?'bg-blue-600 text-white shadow-xl shadow-blue-600/20':'bg-slate-800 text-slate-600'}`}>
-                                {status === 'syncing' ? 'UPDATING...' : status === 'success' ? '✓ SYNC COMPLETE' : 'CONFIRM & SYNC'}
+                                {status === 'syncing' ? 'SYNCING...' : status === 'success' ? '✓ SUCCESS' : 'SYNC TO DATABASE'}
                             </button>
                         </div>
                     </div>
 
                     <div className="w-full max-w-2xl bg-[#161b22] border border-slate-800 rounded-[2.5rem] p-8 shadow-2xl">
-                        <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
-                            <h2 className="text-sm font-black text-slate-400 uppercase tracking-[0.3em]">RECORDS DATABASE</h2>
-                            <span className="text-[10px] font-black bg-slate-800 px-3 py-1 rounded-full text-slate-500">{dbRecords.length} TOTAL RECORDS</span>
-                        </div>
-
-                        <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                            {dbRecords.length === 0 ? (
-                                <div className="text-center py-20">
-                                    <p className="text-slate-800 font-black tracking-[0.2em] italic">DATABASE EMPTY</p>
-                                </div>
-                            ) : (
-                                dbRecords.map((rec, i) => (
-                                    <div key={i} className="flex justify-between items-center bg-[#0b0e14] p-5 rounded-2xl border border-slate-800 hover:border-slate-700 transition-all">
-                                        <div className="flex-1">
-                                            <p className="text-white font-black text-sm">{rec.orderId}</p>
-                                            <p className="text-[10px] text-slate-500 font-mono mt-1 font-bold">{rec.trackingNumber}</p>
-                                            <p className="text-[8px] text-slate-600 mt-1 uppercase">By: {rec.submittedBy || 'Unknown'}</p>
-                                        </div>
-                                        <div className="flex items-center gap-4 flex-wrap justify-end">
-                                            <span className="text-[9px] font-black uppercase text-blue-500/80 bg-blue-500/5 px-3 py-1.5 rounded-lg border border-blue-500/10">{rec.courier}</span>
-                                            
-                                            {rec.link && rec.link !== "No Image" && (
-                                                <div className="flex gap-2 flex-wrap">
-                                                    {rec.link.split(" , ").map((url, idx, arr) => (
-                                                        <a 
-                                                            key={idx}
-                                                            href={getDirectDownload(url)} 
-                                                            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg text-[10px] font-black tracking-wider uppercase transition-all shadow-md flex items-center gap-1.5"
-                                                        >
-                                                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
-                                                                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-                                                                <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-                                                            </svg>
-                                                            {arr.length > 1 ? `Label ${idx + 1}` : 'Download'}
-                                                        </a>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
+                        <h2 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.4em] mb-6 border-b border-slate-800 pb-4">Live Records</h2>
+                        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                            {dbRecords.map((rec, i) => (
+                                <div key={i} className="flex justify-between items-center bg-[#0b0e14] p-5 rounded-2xl border border-slate-800">
+                                    <div className="flex-1">
+                                        <p className="text-white font-black text-sm">{rec.orderId}</p>
+                                        <p className="text-[9px] text-slate-600 font-mono mt-1">{rec.trackingNumber}</p>
                                     </div>
-                                ))
-                            )}
+                                    {rec.link && rec.link !== "No Image" && (
+                                        <div className="flex gap-2">
+                                            {rec.link.split(" , ").map((url, idx) => (
+                                                <a key={idx} href={getDirectDownload(url)} className="bg-slate-800 hover:bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">Doc {idx + 1}</a>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
