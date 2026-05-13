@@ -38,16 +38,17 @@
 
             // App States
             const [orderId, setOrderId] = useState('');
-            const [files, setFiles] = useState([]);
-            const [base64Images, setBase64Images] = useState([]);
-            const [extracted, setExtracted] = useState({ trk: '', courier: '' });
-            const [status, setStatus] = useState('idle');
-            const [dbRecords, setDbRecords] = useState([]);
+            const [trackingNumber, setTrackingNumber] = useState(''); // NEW: Manual Input State
+            const [courier, setCourier] = useState(''); // NEW: Manual Input State
             const [productCost, setProductCost] = useState('');
             const [returnFee, setReturnFee] = useState('');
+            const [files, setFiles] = useState([]);
+            const [base64Images, setBase64Images] = useState([]);
+            const [status, setStatus] = useState('idle');
+            const [dbRecords, setDbRecords] = useState([]);
             const fileInputRef = useRef(null);
 
-            // --- THE LOGIN HANDLER (With Emergency Debug) ---
+            // --- THE LOGIN HANDLER ---
             const handleCredentialResponse = async (response) => {
                 const jwtToken = response.credential;
                 setAuthError("Verifying with secure database...");
@@ -66,7 +67,7 @@
                         setAuthError("");
                     }
                 } catch (e) {
-                    setAuthError("Connection Failed: Check if your Google Script URL is correct and deployed as a 'Web App'.");
+                    setAuthError("Connection Failed: Check if your Google Script URL is correct.");
                 }
             };
 
@@ -86,7 +87,6 @@
                     }
                 };
 
-                // Retry logic to ensure Google script is loaded
                 if (window.google) {
                     renderButton();
                 } else {
@@ -119,9 +119,9 @@
 
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
-                let courier = "Unknown";
-                if (cleanText.includes("FEDEX")) courier = "FedEx Ground";
-                if (cleanText.includes("UPS") || cleanText.includes("1Z")) courier = "UPS";
+                let foundCourier = "Unknown";
+                if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground";
+                if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
                 
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
@@ -130,7 +130,7 @@
 
                 return { 
                     trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", 
-                    courier: (uniqueTrks.length > 0 && courier === "Unknown") ? "FedEx Ground" : courier 
+                    courier: (uniqueTrks.length > 0 && foundCourier === "Unknown") ? "FedEx Ground" : foundCourier 
                 };
             };
 
@@ -153,30 +153,46 @@
                         combinedText += text + " ";
                     }
                     setBase64Images(allBase64);
-                    setExtracted(parseLabelText(combinedText)); 
-                    setStatus('ready');
+                    
+                    // Auto-fill the manual inputs if data is found
+                    const parsed = parseLabelText(combinedText);
+                    if (parsed.trk !== "Not Found") setTrackingNumber(parsed.trk);
+                    if (parsed.courier !== "Unknown") setCourier(parsed.courier);
+                    
+                    setStatus('idle'); // Set back to idle so they can click sync
                 } catch (err) { setStatus('idle'); }
             };
 
             const handleSync = async () => {
                 setStatus('syncing');
                 const refund = (parseFloat(productCost) || 0) - (parseFloat(returnFee) || 0);
+                
+                // Allow manual overrides to be sent to database
                 const payload = { 
-                    token, orderId, trackingNumber: extracted.trk, 
-                    courier: extracted.courier, images: base64Images, 
-                    productCost, returnFee, refundAmount: refund.toFixed(2)
+                    token, 
+                    orderId, 
+                    trackingNumber: trackingNumber || "No Tracking", 
+                    courier: courier || "N/A", 
+                    images: base64Images, 
+                    productCost, 
+                    returnFee, 
+                    refundAmount: refund.toFixed(2)
                 };
+
                 try {
                     await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
                     setStatus('success');
                     setTimeout(() => { 
+                        // Clear all fields
                         setOrderId(''); setProductCost(''); setReturnFee(''); 
-                        setFiles([]); setBase64Images([]); setExtracted({ trk: '', courier: '' }); 
+                        setTrackingNumber(''); setCourier(''); 
+                        setFiles([]); setBase64Images([]); 
                         setStatus('idle'); loadDatabase(); 
                     }, 1500);
-                } catch (e) { setStatus('ready'); }
+                } catch (e) { setStatus('idle'); }
             };
 
+            // Login Screen
             if (!isAuth) {
                 return (
                     <div className="min-h-screen flex items-center justify-center p-6 bg-[#0b0e14]">
@@ -197,6 +213,7 @@
                 );
             }
 
+            // Main App Screen
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
                     <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
@@ -209,41 +226,56 @@
                         </div>
 
                         <div className="space-y-6">
-                            <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ORDER ID" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-800 uppercase tracking-widest"/>
+                            {/* Order ID */}
+                            <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ORDER ID *" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-600 uppercase tracking-widest"/>
 
+                            {/* Editable Tracking & Courier */}
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-2">
-                                    <label className="text-[10px] text-slate-600 font-bold uppercase ml-2">Cost</label>
-                                    <input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold"/>
+                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Tracking Number</label>
+                                    <input type="text" value={trackingNumber} onChange={(e) => setTrackingNumber(e.target.value)} placeholder="Manual or Auto-fill" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm"/>
                                 </div>
                                 <div className="space-y-2">
-                                    <label className="text-[10px] text-slate-600 font-bold uppercase ml-2">Fee</label>
-                                    <input type="number" value={returnFee} onChange={(e) => setReturnFee(e.target.value)} placeholder="0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-red-500 font-bold"/>
+                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Courier</label>
+                                    <input type="text" value={courier} onChange={(e) => setCourier(e.target.value)} placeholder="UPS, FedEx, etc." className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm"/>
                                 </div>
                             </div>
 
-                            <div onClick={() => fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-10 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
+                            {/* Financials */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-2">
+                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Product Cost</label>
+                                    <input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="$ 0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold"/>
+                                </div>
+                                <div className="space-y-2">
+                                    <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Return Fee</label>
+                                    <input type="number" value={returnFee} onChange={(e) => setReturnFee(e.target.value)} placeholder="$ 0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-red-500 font-bold"/>
+                                </div>
+                            </div>
+
+                            {/* Optional File Upload */}
+                            <div onClick={() => status !== 'scanning' && fileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-2xl p-6 flex flex-col items-center justify-center cursor-pointer hover:border-blue-600 transition-all bg-[#0b0e14]/50">
                                 <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
-                                {files.length > 0 ? (
-                                    <p className="text-blue-400 font-black tracking-widest uppercase">{files.length} Selected</p>
+                                {status === 'scanning' ? (
+                                    <p className="text-yellow-500 text-xs font-black uppercase tracking-widest animate-pulse">Scanning Document...</p>
+                                ) : files.length > 0 ? (
+                                    <p className="text-blue-400 font-black tracking-widest uppercase text-sm">{files.length} Document(s) Attached</p>
                                 ) : (
-                                    <p className="text-slate-700 text-xs font-black uppercase tracking-widest">Select Documents</p>
+                                    <div className="text-center">
+                                        <p className="text-slate-400 text-sm font-black uppercase tracking-widest">Attach Label Image</p>
+                                        <p className="text-slate-600 text-[10px] font-bold mt-1">(Optional - Will auto-fill tracking)</p>
+                                    </div>
                                 )}
                             </div>
 
-                            {status !== 'idle' && (
-                                <div className="bg-[#0b0e14] p-5 rounded-2xl border border-slate-800 grid grid-cols-2 gap-4">
-                                    <div><p className="text-[9px] text-slate-600 font-bold uppercase">Tracking</p><p className="font-mono text-white font-bold text-xs">{extracted.trk || '...'}</p></div>
-                                    <div className="text-right"><p className="text-[9px] text-slate-600 font-bold uppercase">Courier</p><p className="text-blue-500 font-black italic text-xs">{extracted.courier || '...'}</p></div>
-                                </div>
-                            )}
-
-                            <button onClick={handleSync} disabled={status !== 'ready' || !orderId} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${status==='ready'?'bg-blue-600 text-white shadow-xl shadow-blue-600/20':'bg-slate-800 text-slate-600'}`}>
-                                {status === 'syncing' ? 'SYNCING...' : status === 'success' ? '✓ SUCCESS' : 'SYNC TO DATABASE'}
+                            {/* Sync Button (Only requires Order ID now) */}
+                            <button onClick={handleSync} disabled={!orderId || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/20 hover:bg-blue-500' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}>
+                                {status === 'syncing' ? 'SYNCING TO DATABASE...' : status === 'success' ? '✓ SAVED SUCCESSFULLY' : 'SUBMIT RECORD'}
                             </button>
                         </div>
                     </div>
 
+                    {/* Live Records Table */}
                     <div className="w-full max-w-2xl bg-[#161b22] border border-slate-800 rounded-[2.5rem] p-8 shadow-2xl">
                         <h2 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.4em] mb-6 border-b border-slate-800 pb-4">Live Records</h2>
                         <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
@@ -251,17 +283,20 @@
                                 <div key={i} className="flex justify-between items-center bg-[#0b0e14] p-5 rounded-2xl border border-slate-800">
                                     <div className="flex-1">
                                         <p className="text-white font-black text-sm">{rec.orderId}</p>
-                                        <p className="text-[9px] text-slate-600 font-mono mt-1">{rec.trackingNumber}</p>
+                                        <p className="text-[9px] text-slate-400 font-mono mt-1">
+                                            {rec.trackingNumber} <span className="text-blue-500 ml-2">{rec.courier}</span>
+                                        </p>
                                     </div>
-                                    {rec.link && rec.link !== "No Image" && (
+                                    {rec.link && rec.link !== "No Image" && rec.link.trim() !== "" && (
                                         <div className="flex gap-2">
                                             {rec.link.split(" , ").map((url, idx) => (
-                                                <a key={idx} href={getDirectDownload(url)} className="bg-slate-800 hover:bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">Doc {idx + 1}</a>
+                                                <a key={idx} href={getDirectDownload(url)} target="_blank" rel="noreferrer" className="bg-slate-800 hover:bg-blue-600 text-white px-3 py-2 rounded-lg text-[10px] font-black uppercase transition-all">Doc {idx + 1}</a>
                                             ))}
                                         </div>
                                     )}
                                 </div>
                             ))}
+                            {dbRecords.length === 0 && <p className="text-slate-600 text-xs text-center font-bold">No records found.</p>}
                         </div>
                     </div>
                 </div>
