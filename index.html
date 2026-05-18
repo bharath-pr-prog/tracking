@@ -96,14 +96,20 @@
 
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
-                let foundCourier = "Unknown";
+                let foundCourier = ""; // Default to empty so dropdown works correctly
+                
+                // Smart OCR mapping to exactly match dropdown options
                 if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground";
                 if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
+                if (cleanText.includes("USPS")) foundCourier = "USPS";
+                if (cleanText.includes("AMAZON")) foundCourier = "Amazon";
+                
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
                 let foundTrks = matches.map(m => m[1].replace(/[^0-9]/g, '').substring(0, 12)).filter(d => d.length >= 12);
                 let uniqueTrks = [...new Set(foundTrks)];
-                return { trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", courier: (uniqueTrks.length > 0 && foundCourier === "Unknown") ? "FedEx Ground" : foundCourier };
+                
+                return { trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", courier: foundCourier };
             };
 
             const handleFileUpload = async (e) => {
@@ -121,7 +127,7 @@
                     setBase64Images(allBase64);
                     const parsed = parseLabelText(combinedText);
                     if (parsed.trk !== "Not Found") setTrackingNumber(parsed.trk);
-                    if (parsed.courier !== "Unknown") setCourier(parsed.courier);
+                    if (parsed.courier !== "") setCourier(parsed.courier); // Only update if a valid courier was found
                     setStatus('idle'); 
                 } catch (err) { setStatus('idle'); }
             };
@@ -198,7 +204,19 @@
                                 <input value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder="ORDER ID *" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-5 text-white outline-none focus:border-blue-500 font-bold placeholder:text-slate-600 uppercase tracking-widest"/>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2"><label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Tracking Number</label><input type="text" value={trackingNumber} onChange={(e) => setTrackingNumber(e.target.value)} placeholder="Manual or Scan" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm"/></div>
-                                    <div className="space-y-2"><label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Courier</label><input type="text" value={courier} onChange={(e) => setCourier(e.target.value)} placeholder="UPS, FedEx" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm"/></div>
+                                    
+                                    {/* DROPDOWN MENU ADDED HERE FOR SCANNER */}
+                                    <div className="space-y-2">
+                                        <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Courier</label>
+                                        <select value={courier} onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm cursor-pointer">
+                                            <option value="" disabled>Select Courier</option>
+                                            <option value="FedEx Ground">FedEx Ground</option>
+                                            <option value="Amazon">Amazon</option>
+                                            <option value="UPS">UPS</option>
+                                            <option value="USPS">USPS</option>
+                                        </select>
+                                    </div>
+
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2"><label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Product Cost</label><input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="$ 0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold"/></div>
@@ -208,7 +226,8 @@
                                     <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
                                     {status === 'scanning' ? <p className="text-yellow-500 text-xs font-black uppercase tracking-widest animate-pulse">Scanning...</p> : files.length > 0 ? <p className="text-blue-400 font-black tracking-widest uppercase text-sm">{files.length} Document(s)</p> : <div className="text-center"><p className="text-slate-400 text-sm font-black uppercase tracking-widest">Attach Label Image</p></div>}
                                 </div>
-                                <button onClick={handleSync} disabled={!orderId || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
+                                {/* SUBMIT BUTTON NOW REQUIRES COURIER */}
+                                <button onClick={handleSync} disabled={!orderId || !courier || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && courier && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
                                     {status === 'syncing' ? 'SAVING...' : status === 'success' ? '✓ SAVED' : 'SUBMIT RECORD'}
                                 </button>
                             </div>
@@ -242,7 +261,7 @@
                                                     <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest mt-1">Pending Supplier Action</p>
                                                 </div>
                                                 {resolvingId !== rec.orderId && (
-                                                    <button onClick={() => setResolvingId(rec.orderId)} className="border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all">Complete Form</button>
+                                                    <button onClick={() => { setResolvingId(rec.orderId); setCourier(''); }} className="border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all">Complete Form</button>
                                                 )}
                                             </div>
 
@@ -250,12 +269,24 @@
                                                 <div className="mt-6 pt-6 border-t border-slate-800 space-y-4 animate-fade-in">
                                                     <div className="grid grid-cols-2 gap-4">
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Tracking *</label><input type="text" onChange={(e) => setTrackingNumber(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
-                                                        <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Courier *</label><input type="text" onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
+                                                        
+                                                        {/* DROPDOWN MENU ADDED HERE FOR SUPPLIER FORM */}
+                                                        <div className="space-y-1">
+                                                            <label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Courier *</label>
+                                                            <select value={courier} onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500 cursor-pointer">
+                                                                <option value="" disabled>Select Courier</option>
+                                                                <option value="FedEx Ground">FedEx Ground</option>
+                                                                <option value="Amazon">Amazon</option>
+                                                                <option value="UPS">UPS</option>
+                                                                <option value="USPS">USPS</option>
+                                                            </select>
+                                                        </div>
+
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Product Cost *</label><input type="number" onChange={(e) => setProductCost(e.target.value)} placeholder="$" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Return Fee *</label><input type="number" onChange={(e) => setReturnFee(e.target.value)} placeholder="$" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
                                                     </div>
                                                     <div className="flex gap-2 pt-2">
-                                                        <button onClick={() => setResolvingId(null)} className="flex-1 bg-slate-800 text-slate-400 py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-slate-700">Cancel</button>
+                                                        <button onClick={() => { setResolvingId(null); setCourier(''); }} className="flex-1 bg-slate-800 text-slate-400 py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-slate-700">Cancel</button>
                                                         <button onClick={() => completeRecall(rec.orderId)} disabled={!trackingNumber || !courier || !productCost || !returnFee || status === 'syncing_recall_complete'} className="flex-[2] bg-orange-500 text-white py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-orange-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all">
                                                             {status === 'syncing_recall_complete' ? 'Saving...' : 'Submit Resolution'}
                                                         </button>
