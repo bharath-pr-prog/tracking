@@ -12,7 +12,7 @@
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body { background-color: #0b0e14; color: #cbd5e1; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar { height: 5px; width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #0b0e14; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
     </style>
@@ -29,10 +29,14 @@
             const [isAuth, setIsAuth] = useState(false);
             const [token, setToken] = useState(null);
             const [authError, setAuthError] = useState("");
-            
             const [userRole, setUserRole] = useState("SUPPLIER"); 
             
             const [activeTab, setActiveTab] = useState('scanner'); 
+            const [dbRecords, setDbRecords] = useState([]);
+            const [tickets, setTickets] = useState([]); 
+            const [status, setStatus] = useState('idle');
+
+            // --- SCANNER STATES ---
             const [orderId, setOrderId] = useState('');
             const [trackingNumber, setTrackingNumber] = useState(''); 
             const [courier, setCourier] = useState(''); 
@@ -40,12 +44,32 @@
             const [returnFee, setReturnFee] = useState('');
             const [files, setFiles] = useState([]);
             const [base64Images, setBase64Images] = useState([]);
-            const [status, setStatus] = useState('idle');
-            const [dbRecords, setDbRecords] = useState([]);
             const fileInputRef = useRef(null);
 
+            // --- RECALL STATES ---
             const [recallOrderId, setRecallOrderId] = useState('');
             const [resolvingId, setResolvingId] = useState(null); 
+
+            // --- HELPDESK STATES ---
+            const [activeTicket, setActiveTicket] = useState(null);
+            const [showCreateTicket, setShowCreateTicket] = useState(false);
+            
+            const [hdOrderId, setHdOrderId] = useState('');
+            const [hdStatus, setHdStatus] = useState('');
+            const [hdComment, setHdComment] = useState('');
+            const [hdLinks, setHdLinks] = useState('');
+            const [hdFiles, setHdFiles] = useState([]);
+            const [hdBase64Files, setHdBase64Files] = useState([]);
+            const hdFileInputRef = useRef(null);
+
+            // The 4 distinct Helpdesk Tabs
+            const HELPDESK_TABS = [
+                { id: "Tracking related issue", label: "Tracking" },
+                { id: "Damage claims replacement/reship request", label: "Damage Claims" },
+                { id: "General issues", label: "Issues" },
+                { id: "Order modification", label: "Order Mods" }
+            ];
+            const HELPDESK_CATEGORIES = HELPDESK_TABS.map(t => t.id);
 
             const handleCredentialResponse = async (response) => {
                 const jwtToken = response.credential;
@@ -59,6 +83,7 @@
                         setToken(jwtToken);
                         setUserRole(data.role || "SUPPLIER");
                         setDbRecords(Array.isArray(data.records) ? data.records : []);
+                        setTickets(Array.isArray(data.tickets) ? data.tickets : []);
                         setIsAuth(true);
                         setAuthError("");
                     }
@@ -83,42 +108,81 @@
                     const response = await fetch(`${GOOGLE_SCRIPT_URL}?token=${token}`);
                     const data = await response.json();
                     if (Array.isArray(data.records)) setDbRecords(data.records);
+                    if (Array.isArray(data.tickets)) setTickets(data.tickets);
                 } catch (e) {}
             };
 
-            const getDirectDownload = (url) => {
-                if (!url || !url.includes('/d/')) return url;
-                try { const fileId = url.split('/d/')[1].split('/')[0]; return `https://drive.google.com/uc?export=download&id=${fileId}`; } 
-                catch (e) { return url; }
+            // ==========================================
+            // --- HELPDESK FUNCTIONS ---
+            // ==========================================
+            const handleHelpdeskFileUpload = async (e) => {
+                const upFiles = Array.from(e.target.files);
+                if (upFiles.length === 0) return;
+                setHdFiles(upFiles);
+                setStatus('reading_files');
+                try {
+                    let allBase64 = [];
+                    for (let f of upFiles) {
+                        const base64 = await new Promise(r => { 
+                            const reader = new FileReader(); 
+                            reader.onloadend = () => r(reader.result); 
+                            reader.readAsDataURL(f); 
+                        });
+                        allBase64.push(base64);
+                    }
+                    setHdBase64Files(allBase64);
+                    setStatus('idle');
+                } catch (err) { setStatus('idle'); }
             };
 
-            // --- RESTORED SMART SCANNER LOGIC ---
+            const resetHelpdeskForm = () => {
+                setHdOrderId(''); setHdStatus(''); setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
+            };
+
+            const submitNewTicket = async () => {
+                setStatus('syncing_ticket');
+                // Auto-assigns category based on whichever tab is currently active
+                const payload = { 
+                    action: "create_ticket", token, 
+                    orderId: hdOrderId, category: activeTab, status: hdStatus, 
+                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files 
+                };
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+                    setTimeout(() => { setShowCreateTicket(false); resetHelpdeskForm(); setStatus('idle'); loadDatabase(); }, 1500);
+                } catch (e) { setStatus('idle'); }
+            };
+
+            const submitTicketReply = async () => {
+                setStatus('syncing_ticket');
+                const payload = { 
+                    action: "update_ticket", token, 
+                    ticketId: activeTicket.ticketId, userRole: userRole, status: hdStatus, 
+                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files 
+                };
+                try {
+                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
+                    setTimeout(() => { setActiveTicket(null); resetHelpdeskForm(); setStatus('idle'); loadDatabase(); }, 1500);
+                } catch (e) { setStatus('idle'); }
+            };
+
+            // ==========================================
+            // --- STANDARD SCANNER & RECALL LOGIC ---
+            // ==========================================
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
                 let foundCourier = ""; 
-                
-                // 1. Look for obvious logos/words
                 if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground";
                 else if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
                 else if (cleanText.includes("USPS")) foundCourier = "USPS";
                 else if (cleanText.includes("AMAZON") || cleanText.includes("TBA")) foundCourier = "Amazon";
                 
-                // 2. Extract the actual tracking number
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
                 let foundTrks = matches.map(m => m[1].replace(/[^0-9]/g, '').substring(0, 12)).filter(d => d.length >= 12);
                 let uniqueTrks = [...new Set(foundTrks)];
-
-                // 3. THE FALLBACK RULE: If we found a tracking number but couldn't read the logo, 
-                // default to FedEx (just like your old code did!)
-                if (uniqueTrks.length > 0 && foundCourier === "") {
-                    foundCourier = "FedEx Ground";
-                }
-                
-                return { 
-                    trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", 
-                    courier: foundCourier 
-                };
+                if (uniqueTrks.length > 0 && foundCourier === "") foundCourier = "FedEx Ground";
+                return { trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", courier: foundCourier };
             };
 
             const handleFileUpload = async (e) => {
@@ -135,10 +199,8 @@
                     }
                     setBase64Images(allBase64);
                     const parsed = parseLabelText(combinedText);
-                    
                     if (parsed.trk !== "Not Found") setTrackingNumber(parsed.trk);
                     if (parsed.courier !== "") setCourier(parsed.courier); 
-                    
                     setStatus('idle'); 
                 } catch (err) { setStatus('idle'); }
             };
@@ -188,24 +250,190 @@
             }
 
             const pendingRecalls = dbRecords.filter(r => r.trackingNumber === "PENDING RECALL");
-            const generalRecords = dbRecords.filter(r => r.trackingNumber !== "PENDING RECALL");
+            
+            // Check if current tab is one of our ticket systems
+            const isTicketTab = HELPDESK_CATEGORIES.includes(activeTab);
+            // Get tickets ONLY for the currently clicked tab
+            const activeCategoryTickets = tickets.filter(t => t.category === activeTab);
 
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
-                    <div className="w-full max-w-xl flex justify-between items-center border-b border-slate-800 pb-2">
-                        <div className="flex gap-4">
-                            <button onClick={() => setActiveTab('scanner')} className={`pb-2 px-4 font-black uppercase tracking-widest text-sm transition-all ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>Standard Scan</button>
-                            <button onClick={() => setActiveTab('recalls')} className={`pb-2 px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
+                    {/* NAVIGATION BAR WITH HORIZONTAL SCROLL */}
+                    <div className="w-full max-w-4xl flex justify-between items-center border-b border-slate-800 pb-2">
+                        <div className="flex gap-4 overflow-x-auto custom-scrollbar pb-2 min-w-0">
+                            
+                            {/* Standard Scan Tab */}
+                            <button onClick={() => {setActiveTab('scanner'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>Standard Scan</button>
+                            
+                            {/* Recalls Tab */}
+                            <button onClick={() => {setActiveTab('recalls'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
                                 Recalls {pendingRecalls.length > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
                             </button>
+
+                            {/* The 4 dynamic Helpdesk Tabs */}
+                            {HELPDESK_TABS.map(tab => {
+                                // Find if there are tickets needing action in this specific category
+                                const count = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole === "SUPPLIER" && t.status === "Waiting on Supplier"))).length;
+                                return (
+                                    <button key={tab.id} onClick={() => {setActiveTab(tab.id); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === tab.id ? 'text-purple-500 border-b-2 border-purple-500' : 'text-slate-600 hover:text-slate-400'}`}>
+                                        {tab.label} {count > 0 && <span className="bg-purple-500 text-white text-[10px] px-2 py-0.5 rounded-full">{count}</span>}
+                                    </button>
+                                );
+                            })}
                         </div>
-                        <div className="px-3 py-1 bg-slate-800 rounded-full">
+                        <div className="px-3 py-1 bg-slate-800 rounded-full ml-4 whitespace-nowrap">
                             <span className="text-[9px] font-black tracking-widest uppercase text-emerald-400">{userRole}</span>
                         </div>
                     </div>
 
+                    {/* ========================================== */}
+                    {/* TICKETING / HELPDESK VIEWS                 */}
+                    {/* ========================================== */}
+                    {isTicketTab && (
+                        <div className="w-full max-w-2xl space-y-8">
+                            
+                            {/* --- TICKET LIST VIEW (Filtered by Active Tab) --- */}
+                            {!showCreateTicket && !activeTicket && (
+                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
+                                    <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+                                        <h1 className="text-xl font-black text-white tracking-widest italic uppercase">{HELPDESK_TABS.find(t => t.id === activeTab).label} Tickets</h1>
+                                        <div className="flex gap-2">
+                                            <button onClick={loadDatabase} className="text-[9px] font-bold text-purple-500 border border-purple-500/20 px-3 py-1 rounded-full uppercase hover:bg-purple-500/10">Refresh</button>
+                                            {userRole === "MANAGER" && (
+                                                <button onClick={() => setShowCreateTicket(true)} className="text-[9px] font-bold bg-purple-600 text-white px-3 py-1 rounded-full uppercase hover:bg-purple-500">+ New Ticket</button>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-4">
+                                        {activeCategoryTickets.length === 0 && <p className="text-slate-500 text-sm italic text-center py-4">No tickets found for this category.</p>}
+                                        {activeCategoryTickets.map((t, i) => (
+                                            <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole === "SUPPLIER" ? "Waiting on Agent" : ""); }} className="bg-[#0b0e14] border border-slate-700 hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group">
+                                                <div>
+                                                    <div className="flex items-center gap-3 mb-1">
+                                                        <span className="text-white font-black text-sm">{t.orderId}</span>
+                                                        <span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span>
+                                                    </div>
+                                                </div>
+                                                <div className="text-right">
+                                                    <span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${t.status === 'Closed' ? 'bg-slate-800 text-slate-400' : t.status === 'Waiting on Supplier' ? 'bg-orange-500/20 text-orange-400' : 'bg-purple-500/20 text-purple-400'}`}>
+                                                        {t.status}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* --- CREATE NEW TICKET FORM (MANAGER ONLY) --- */}
+                            {showCreateTicket && userRole === "MANAGER" && (
+                                <div className="bg-[#161b22] border border-purple-500/30 rounded-[2rem] p-8 shadow-2xl animate-fade-in">
+                                    <h2 className="text-sm font-black text-purple-500 tracking-widest uppercase mb-6 flex justify-between items-center">
+                                        Open New Ticket <button onClick={() => {setShowCreateTicket(false); resetHelpdeskForm();}} className="text-slate-500 hover:text-white">✕</button>
+                                    </h2>
+                                    <div className="space-y-4">
+                                        <input value={hdOrderId} onChange={(e) => setHdOrderId(e.target.value)} placeholder="ORDER ID *" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold uppercase"/>
+                                        
+                                        <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm">
+                                            <option value="" disabled>Initial Status *</option>
+                                            <option value="Open">Open</option>
+                                            <option value="Waiting on Supplier">Waiting on Supplier</option>
+                                            <option value="Closed">Closed</option>
+                                        </select>
+
+                                        <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Enter details..." rows="3" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
+                                        <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Related Links/URLs (Optional)" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm"/>
+                                        
+                                        <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]/50">
+                                            <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={handleHelpdeskFileUpload} className="hidden" />
+                                            {hdFiles.length > 0 ? <p className="text-purple-400 font-bold text-xs uppercase">{hdFiles.length} File(s) Attached</p> : <p className="text-slate-500 text-xs font-bold uppercase">Attach Files (PDF, JPG, PNG)</p>}
+                                        </div>
+
+                                        <button onClick={submitNewTicket} disabled={!hdOrderId || !hdStatus || status.includes('sync')} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-30 transition-all">
+                                            {status === 'syncing_ticket' ? 'Creating...' : 'Create Ticket'}
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* --- TICKET THREAD & REPLY VIEW --- */}
+                            {activeTicket && (
+                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] shadow-2xl flex flex-col h-[80vh] animate-fade-in">
+                                    <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-[#0b0e14] rounded-t-[2rem]">
+                                        <div>
+                                            <h2 className="text-white font-black text-xl">{activeTicket.orderId}</h2>
+                                            <p className="text-slate-400 text-xs font-bold">{activeTicket.category} • <span className="text-purple-400">{activeTicket.status}</span></p>
+                                        </div>
+                                        <button onClick={() => {setActiveTicket(null); resetHelpdeskForm();}} className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:bg-slate-700">Back</button>
+                                    </div>
+
+                                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-[#0b0e14]/30">
+                                        {activeTicket.thread.map((msg, i) => {
+                                            const isMe = msg.role === userRole;
+                                            return (
+                                                <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
+                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                                        {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
+                                                        {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
+                                                        {msg.files && msg.files.length > 0 && (
+                                                            <div className="mt-3 flex gap-2 flex-wrap">
+                                                                {msg.files.map((url, idx) => (
+                                                                    <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+
+                                    {activeTicket.status !== 'Closed' && (
+                                        <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
+                                            <div className="space-y-3">
+                                                <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
+                                                
+                                                <div className="flex gap-3">
+                                                    <div className="flex-1">
+                                                        {userRole === "MANAGER" ? (
+                                                            <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs">
+                                                                <option value="" disabled>Update Status *</option>
+                                                                <option value="Open">Open</option>
+                                                                <option value="Waiting on Supplier">Waiting on Supplier</option>
+                                                                <option value="Closed">Closed</option>
+                                                            </select>
+                                                        ) : (
+                                                            <select value={hdStatus} disabled className="w-full bg-[#0b0e14] border border-purple-500/50 rounded-xl p-3 text-purple-400 font-black text-xs opacity-80">
+                                                                <option value="Waiting on Agent">Status: Waiting on Agent</option>
+                                                            </select>
+                                                        )}
+                                                    </div>
+                                                    <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
+                                                    <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="flex-1 border border-slate-700 rounded-xl p-3 flex items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]">
+                                                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={handleHelpdeskFileUpload} className="hidden" />
+                                                        <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
+                                                    </div>
+                                                </div>
+
+                                                <button onClick={submitTicketReply} disabled={!hdStatus && userRole === "MANAGER" || status.includes('sync')} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">
+                                                    {status === 'syncing_ticket' ? 'Sending...' : 'Send Reply'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                        </div>
+                    )}
+
+                    {/* ========================================== */}
+                    {/* STANDARD SCAN TAB (UNCHANGED)              */}
+                    {/* ========================================== */}
                     {activeTab === 'scanner' && (
-                        <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
+                        <div className="w-full max-w-xl bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl animate-fade-in">
                             <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
                                 <div><h1 className="text-xl font-black text-white tracking-widest italic uppercase">Standard Return</h1></div>
                                 <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full uppercase hover:bg-blue-500/10">Refresh</button>
@@ -225,7 +453,6 @@
                                             <option value="USPS">USPS</option>
                                         </select>
                                     </div>
-
                                 </div>
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2"><label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Product Cost</label><input type="number" value={productCost} onChange={(e) => setProductCost(e.target.value)} placeholder="$ 0.00" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold"/></div>
@@ -242,9 +469,11 @@
                         </div>
                     )}
 
+                    {/* ========================================== */}
+                    {/* RECALLS TAB (UNCHANGED)                    */}
+                    {/* ========================================== */}
                     {activeTab === 'recalls' && (
-                        <div className="w-full max-w-xl space-y-8">
-                            
+                        <div className="w-full max-w-xl space-y-8 animate-fade-in">
                             {userRole === "MANAGER" && (
                                 <div className="bg-[#161b22] border border-orange-500/30 rounded-[2rem] p-8 shadow-2xl">
                                     <h2 className="text-sm font-black text-orange-500 tracking-widest uppercase mb-4">Request a Recall</h2>
@@ -276,7 +505,6 @@
                                                 <div className="mt-6 pt-6 border-t border-slate-800 space-y-4 animate-fade-in">
                                                     <div className="grid grid-cols-2 gap-4">
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Tracking *</label><input type="text" onChange={(e) => setTrackingNumber(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
-                                                        
                                                         <div className="space-y-1">
                                                             <label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Courier *</label>
                                                             <select value={courier} onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500 cursor-pointer">
@@ -287,7 +515,6 @@
                                                                 <option value="USPS">USPS</option>
                                                             </select>
                                                         </div>
-
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Product Cost *</label><input type="number" onChange={(e) => setProductCost(e.target.value)} placeholder="$" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Return Fee *</label><input type="number" onChange={(e) => setReturnFee(e.target.value)} placeholder="$" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
                                                     </div>
@@ -303,22 +530,6 @@
                                     ))}
                                     {pendingRecalls.length === 0 && <p className="text-slate-600 text-xs text-center font-bold italic mt-8">No pending recalls at this time.</p>}
                                 </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {activeTab === 'scanner' && (
-                        <div className="w-full max-w-2xl bg-[#161b22] border border-slate-800 rounded-[2.5rem] p-8 shadow-2xl">
-                            <h2 className="text-[10px] font-black text-slate-600 uppercase tracking-[0.4em] mb-6 border-b border-slate-800 pb-4">Completed Records</h2>
-                            <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                                {generalRecords.map((rec, i) => (
-                                    <div key={i} className="flex justify-between items-center bg-[#0b0e14] p-5 rounded-2xl border border-slate-800">
-                                        <div className="flex-1">
-                                            <p className="text-white font-black text-sm">{rec.orderId}</p>
-                                            <p className="text-[9px] text-slate-400 font-mono mt-1">{rec.trackingNumber} <span className="text-blue-500 ml-2">{rec.courier}</span></p>
-                                        </div>
-                                    </div>
-                                ))}
                             </div>
                         </div>
                     )}
