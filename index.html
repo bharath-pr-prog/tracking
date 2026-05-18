@@ -81,7 +81,7 @@
                         setAuthError(`Access Denied: ${data.debug || data.error}`);
                     } else {
                         setToken(jwtToken);
-                        setUserRole(data.role || "SUPPLIER");
+                        setUserRole(data.role ? data.role.toUpperCase() : "SUPPLIER");
                         setDbRecords(Array.isArray(data.records) ? data.records : []);
                         setTickets(Array.isArray(data.tickets) ? data.tickets : []);
                         setIsAuth(true);
@@ -254,20 +254,20 @@
 
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
-                    {/* NAVIGATION BAR WITH HORIZONTAL SCROLL & SMART ROLE BADGES */}
+                    {/* NAVIGATION BAR */}
                     <div className="w-full max-w-4xl flex justify-between items-center border-b border-slate-800 pb-2">
                         <div className="flex gap-4 overflow-x-auto custom-scrollbar pb-2 min-w-0">
                             
                             <button onClick={() => {setActiveTab('scanner'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>Standard Scan</button>
                             
-                            {/* RECALLS BADGE: Only shows if you are a SUPPLIER */}
+                            {/* RECALLS BADGE: Now shows for ANYONE who is not a MANAGER (ignores spelling mistakes) */}
                             <button onClick={() => {setActiveTab('recalls'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
-                                Recalls {(pendingRecalls.length > 0 && userRole === "SUPPLIER") && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
+                                Recalls {(pendingRecalls.length > 0 && userRole !== "MANAGER") && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
                             </button>
 
-                            {/* HELPDESK BADGES: Smart logic detects who needs to reply */}
+                            {/* HELPDESK BADGES */}
                             {HELPDESK_TABS.map(tab => {
-                                const count = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole === "SUPPLIER" && t.status === "Waiting on Supplier"))).length;
+                                const count = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole !== "MANAGER" && t.status === "Waiting on Supplier"))).length;
                                 return (
                                     <button key={tab.id} onClick={() => {setActiveTab(tab.id); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === tab.id ? 'text-purple-500 border-b-2 border-purple-500' : 'text-slate-600 hover:text-slate-400'}`}>
                                         {tab.label} {count > 0 && <span className="bg-purple-500 text-white text-[10px] px-2 py-0.5 rounded-full">{count}</span>}
@@ -301,7 +301,7 @@
                                     <div className="space-y-4">
                                         {activeCategoryTickets.length === 0 && <p className="text-slate-500 text-sm italic text-center py-4">No tickets found for this category.</p>}
                                         {activeCategoryTickets.map((t, i) => (
-                                            <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole === "SUPPLIER" ? "Waiting on Agent" : ""); }} className="bg-[#0b0e14] border border-slate-700 hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group">
+                                            <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : ""); }} className="bg-[#0b0e14] border border-slate-700 hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group">
                                                 <div>
                                                     <div className="flex items-center gap-3 mb-1">
                                                         <span className="text-white font-black text-sm">{t.orderId}</span>
@@ -478,7 +478,8 @@
                             )}
 
                             <div>
-                                <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2">Action Required ({pendingRecalls.length})</h2>
+                                {/* REMOVED THE NOTIFICATION NUMBER FROM THIS HEADER */}
+                                <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2">Action Required</h2>
                                 <div className="space-y-4">
                                     {pendingRecalls.map((rec, i) => (
                                         <div key={i} className="bg-[#161b22] border border-slate-700 rounded-2xl p-6 transition-all">
