@@ -30,7 +30,6 @@
             const [token, setToken] = useState(null);
             const [authError, setAuthError] = useState("");
             
-            // --- NEW: WE NOW TRACK THE USER'S ROLE ---
             const [userRole, setUserRole] = useState("SUPPLIER"); 
             
             const [activeTab, setActiveTab] = useState('scanner'); 
@@ -58,7 +57,6 @@
                         setAuthError(`Access Denied: ${data.debug || data.error}`);
                     } else {
                         setToken(jwtToken);
-                        // READ THE ROLE FROM GOOGLE SHEETS
                         setUserRole(data.role || "SUPPLIER");
                         setDbRecords(Array.isArray(data.records) ? data.records : []);
                         setIsAuth(true);
@@ -94,22 +92,33 @@
                 catch (e) { return url; }
             };
 
+            // --- RESTORED SMART SCANNER LOGIC ---
             const parseLabelText = (text) => {
                 const cleanText = text.toUpperCase().replace(/\n/g, ' ');
-                let foundCourier = ""; // Default to empty so dropdown works correctly
+                let foundCourier = ""; 
                 
-                // Smart OCR mapping to exactly match dropdown options
+                // 1. Look for obvious logos/words
                 if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground";
-                if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
-                if (cleanText.includes("USPS")) foundCourier = "USPS";
-                if (cleanText.includes("AMAZON")) foundCourier = "Amazon";
+                else if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
+                else if (cleanText.includes("USPS")) foundCourier = "USPS";
+                else if (cleanText.includes("AMAZON") || cleanText.includes("TBA")) foundCourier = "Amazon";
                 
+                // 2. Extract the actual tracking number
                 const fedexRegex = /(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi;
                 const matches = [...cleanText.matchAll(fedexRegex)];
                 let foundTrks = matches.map(m => m[1].replace(/[^0-9]/g, '').substring(0, 12)).filter(d => d.length >= 12);
                 let uniqueTrks = [...new Set(foundTrks)];
+
+                // 3. THE FALLBACK RULE: If we found a tracking number but couldn't read the logo, 
+                // default to FedEx (just like your old code did!)
+                if (uniqueTrks.length > 0 && foundCourier === "") {
+                    foundCourier = "FedEx Ground";
+                }
                 
-                return { trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", courier: foundCourier };
+                return { 
+                    trk: uniqueTrks.length > 0 ? uniqueTrks.join(" , ") : "Not Found", 
+                    courier: foundCourier 
+                };
             };
 
             const handleFileUpload = async (e) => {
@@ -126,8 +135,10 @@
                     }
                     setBase64Images(allBase64);
                     const parsed = parseLabelText(combinedText);
+                    
                     if (parsed.trk !== "Not Found") setTrackingNumber(parsed.trk);
-                    if (parsed.courier !== "") setCourier(parsed.courier); // Only update if a valid courier was found
+                    if (parsed.courier !== "") setCourier(parsed.courier); 
+                    
                     setStatus('idle'); 
                 } catch (err) { setStatus('idle'); }
             };
@@ -188,7 +199,6 @@
                                 Recalls {pendingRecalls.length > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
                             </button>
                         </div>
-                        {/* SHOWS THE USER'S ROLE IN THE TOP RIGHT */}
                         <div className="px-3 py-1 bg-slate-800 rounded-full">
                             <span className="text-[9px] font-black tracking-widest uppercase text-emerald-400">{userRole}</span>
                         </div>
@@ -205,7 +215,6 @@
                                 <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2"><label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Tracking Number</label><input type="text" value={trackingNumber} onChange={(e) => setTrackingNumber(e.target.value)} placeholder="Manual or Scan" className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm"/></div>
                                     
-                                    {/* DROPDOWN MENU ADDED HERE FOR SCANNER */}
                                     <div className="space-y-2">
                                         <label className="text-[10px] text-slate-500 font-bold uppercase ml-2">Courier</label>
                                         <select value={courier} onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 text-white outline-none focus:border-blue-500 font-bold text-sm cursor-pointer">
@@ -226,7 +235,6 @@
                                     <input type="file" multiple ref={fileInputRef} onChange={handleFileUpload} className="hidden" />
                                     {status === 'scanning' ? <p className="text-yellow-500 text-xs font-black uppercase tracking-widest animate-pulse">Scanning...</p> : files.length > 0 ? <p className="text-blue-400 font-black tracking-widest uppercase text-sm">{files.length} Document(s)</p> : <div className="text-center"><p className="text-slate-400 text-sm font-black uppercase tracking-widest">Attach Label Image</p></div>}
                                 </div>
-                                {/* SUBMIT BUTTON NOW REQUIRES COURIER */}
                                 <button onClick={handleSync} disabled={!orderId || !courier || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && courier && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
                                     {status === 'syncing' ? 'SAVING...' : status === 'success' ? '✓ SAVED' : 'SUBMIT RECORD'}
                                 </button>
@@ -237,7 +245,6 @@
                     {activeTab === 'recalls' && (
                         <div className="w-full max-w-xl space-y-8">
                             
-                            {/* --- THIS BOX IS NOW HIDDEN FROM SUPPLIERS --- */}
                             {userRole === "MANAGER" && (
                                 <div className="bg-[#161b22] border border-orange-500/30 rounded-[2rem] p-8 shadow-2xl">
                                     <h2 className="text-sm font-black text-orange-500 tracking-widest uppercase mb-4">Request a Recall</h2>
@@ -270,7 +277,6 @@
                                                     <div className="grid grid-cols-2 gap-4">
                                                         <div className="space-y-1"><label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Tracking *</label><input type="text" onChange={(e) => setTrackingNumber(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500"/></div>
                                                         
-                                                        {/* DROPDOWN MENU ADDED HERE FOR SUPPLIER FORM */}
                                                         <div className="space-y-1">
                                                             <label className="text-[9px] text-slate-500 font-bold uppercase ml-2">Courier *</label>
                                                             <select value={courier} onChange={(e) => setCourier(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white font-bold text-xs outline-none focus:border-orange-500 cursor-pointer">
