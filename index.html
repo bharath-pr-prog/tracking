@@ -141,7 +141,6 @@
 
             const submitNewTicket = async () => {
                 setStatus('syncing_ticket');
-                // Auto-assigns category based on whichever tab is currently active
                 const payload = { 
                     action: "create_ticket", token, 
                     orderId: hdOrderId, category: activeTab, status: hdStatus, 
@@ -250,29 +249,24 @@
             }
 
             const pendingRecalls = dbRecords.filter(r => r.trackingNumber === "PENDING RECALL");
-            
-            // Check if current tab is one of our ticket systems
             const isTicketTab = HELPDESK_CATEGORIES.includes(activeTab);
-            // Get tickets ONLY for the currently clicked tab
             const activeCategoryTickets = tickets.filter(t => t.category === activeTab);
 
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
-                    {/* NAVIGATION BAR WITH HORIZONTAL SCROLL */}
+                    {/* NAVIGATION BAR WITH HORIZONTAL SCROLL & SMART ROLE BADGES */}
                     <div className="w-full max-w-4xl flex justify-between items-center border-b border-slate-800 pb-2">
                         <div className="flex gap-4 overflow-x-auto custom-scrollbar pb-2 min-w-0">
                             
-                            {/* Standard Scan Tab */}
                             <button onClick={() => {setActiveTab('scanner'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>Standard Scan</button>
                             
-                            {/* Recalls Tab */}
+                            {/* RECALLS BADGE: Only shows if you are a SUPPLIER */}
                             <button onClick={() => {setActiveTab('recalls'); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
-                                Recalls {pendingRecalls.length > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
+                                Recalls {(pendingRecalls.length > 0 && userRole === "SUPPLIER") && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecalls.length}</span>}
                             </button>
 
-                            {/* The 4 dynamic Helpdesk Tabs */}
+                            {/* HELPDESK BADGES: Smart logic detects who needs to reply */}
                             {HELPDESK_TABS.map(tab => {
-                                // Find if there are tickets needing action in this specific category
                                 const count = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole === "SUPPLIER" && t.status === "Waiting on Supplier"))).length;
                                 return (
                                     <button key={tab.id} onClick={() => {setActiveTab(tab.id); setShowCreateTicket(false); setActiveTicket(null);}} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === tab.id ? 'text-purple-500 border-b-2 border-purple-500' : 'text-slate-600 hover:text-slate-400'}`}>
@@ -292,7 +286,6 @@
                     {isTicketTab && (
                         <div className="w-full max-w-2xl space-y-8">
                             
-                            {/* --- TICKET LIST VIEW (Filtered by Active Tab) --- */}
                             {!showCreateTicket && !activeTicket && (
                                 <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
                                     <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
@@ -326,7 +319,6 @@
                                 </div>
                             )}
 
-                            {/* --- CREATE NEW TICKET FORM (MANAGER ONLY) --- */}
                             {showCreateTicket && userRole === "MANAGER" && (
                                 <div className="bg-[#161b22] border border-purple-500/30 rounded-[2rem] p-8 shadow-2xl animate-fade-in">
                                     <h2 className="text-sm font-black text-purple-500 tracking-widest uppercase mb-6 flex justify-between items-center">
@@ -357,7 +349,6 @@
                                 </div>
                             )}
 
-                            {/* --- TICKET THREAD & REPLY VIEW --- */}
                             {activeTicket && (
                                 <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] shadow-2xl flex flex-col h-[80vh] animate-fade-in">
                                     <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-[#0b0e14] rounded-t-[2rem]">
