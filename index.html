@@ -395,7 +395,7 @@
                 trackingNumber: "PENDING RECALL",
                 courier: "ACTION REQUIRED",
                 refundAmount: "0.00",
-                submittedBy: p.createdBy + " (Awaiting Manager Sync)",
+                submittedBy: p.createdBy + " (Awaiting Approval)",
                 timestamp: p.createdAt,
                 _managerComment: p.payload.comment,
                 _managerLinks: p.payload.links,
@@ -404,7 +404,31 @@
             const combinedPendingRecalls = [...virtualPendingRecalls, ...filteredPendingRecalls.filter(r => String(r.orderId).toLowerCase().includes(searchQuery.toLowerCase()))];
 
             const isTicketTab = HELPDESK_CATEGORIES.includes(activeTab);
-            const activeCategoryTickets = tickets.filter(t => t.category === activeTab && t.status !== "Closed");
+
+            // Virtual pending tickets — Manager's ticket_create that hasn't been synced yet.
+            // Shown to Supplier as a "Pre-Sync Request" so they can reply before Manager syncs.
+            // Uses pending ID as a virtual ticketId for the chat thread.
+            const virtualPendingTickets = pendingTicketCreates
+                .filter(p => p.payload.category === activeTab)
+                .map(p => ({
+                    _isVirtual: true,
+                    _pendingId: p.id,
+                    _editedBadge: p.editedBadge,
+                    _edits: p.edits || [],
+                    ticketId: "PENDING-" + p.id.slice(-6).toUpperCase(),
+                    date: p.createdAt,
+                    orderId: p.payload.orderId,
+                    category: p.payload.category,
+                    status: p.payload.status,
+                    createdBy: p.createdBy,
+                    _managerComment: p.payload.comment,
+                    _managerLinks: p.payload.links,
+                    _managerFiles: p.payload.ticketFiles || []
+                }));
+
+            const realActiveTickets = tickets.filter(t => t.category === activeTab && t.status !== "Closed");
+            // For Suppliers, merge virtual pending tickets in. For Managers, they already see these in the "Pending New Tickets" section above, so don't duplicate.
+            const activeCategoryTickets = userRole === "MANAGER" ? realActiveTickets : [...virtualPendingTickets, ...realActiveTickets];
             const filteredActiveTickets = activeCategoryTickets.filter(t => String(t.orderId).toLowerCase().includes(searchQuery.toLowerCase()) || String(t.ticketId).toLowerCase().includes(searchQuery.toLowerCase()));
             const historyCategoryTickets = tickets.filter(t => t.category === activeTab && t.status === "Closed");
             const filteredHistoryTickets = historyCategoryTickets.filter(t => String(t.orderId).toLowerCase().includes(searchQuery.toLowerCase()) || String(t.ticketId).toLowerCase().includes(searchQuery.toLowerCase()));
@@ -412,14 +436,44 @@
             const paginatedTicketHistory = filteredHistoryTickets.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
             // Active thread for an open ticket (also injects pending ticket_replies as "Awaiting Manager Sync" bubbles)
-            const activeThread = activeTicket ? [
-                ...communications.filter(c => String(c.refId) === String(activeTicket.ticketId)).map(c => ({ ...c, _pending: false })),
-                ...pendingTicketReplies.filter(p => String(p.payload.ticketId) === String(activeTicket.ticketId)).map(p => ({
-                    date: p.createdAt, refId: activeTicket.ticketId, author: p.createdBy, role: p.createdByRole,
-                    comment: p.payload.comment, links: p.payload.links, files: p.payload.ticketFiles || [],
-                    _pending: true, _pendingId: p.id, _pendingStatus: p.payload.status
-                }))
-            ].sort((a,b) => new Date(a.date) - new Date(b.date)) : [];
+            // For virtual (pending) tickets, synthesize the Manager's original request as the first bubble.
+            const activeThread = activeTicket ? (() => {
+                const isVirtual = activeTicket._isVirtual;
+                const threadKey = isVirtual ? activeTicket._pendingId : activeTicket.ticketId;
+                const messages = [];
+
+                // For virtual tickets, inject Manager's original request as first bubble
+                if (isVirtual) {
+                    messages.push({
+                        date: activeTicket.date,
+                        refId: threadKey,
+                        author: activeTicket.createdBy,
+                        role: "MANAGER",
+                        comment: activeTicket._managerComment || "",
+                        links: activeTicket._managerLinks || "",
+                        files: activeTicket._managerFiles || [],
+                        _pending: true,
+                        _pendingId: activeTicket._pendingId,
+                        _isManagerRequest: true
+                    });
+                }
+
+                // Real communications (only for synced tickets)
+                if (!isVirtual) {
+                    communications.filter(c => String(c.refId) === String(activeTicket.ticketId)).forEach(c => messages.push({ ...c, _pending: false }));
+                }
+
+                // Pending replies (matched by either real ticketId or virtual pendingId)
+                pendingTicketReplies
+                    .filter(p => String(p.payload.ticketId) === String(threadKey))
+                    .forEach(p => messages.push({
+                        date: p.createdAt, refId: threadKey, author: p.createdBy, role: p.createdByRole,
+                        comment: p.payload.comment, links: p.payload.links, files: p.payload.ticketFiles || [],
+                        _pending: true, _pendingId: p.id, _pendingStatus: p.payload.status
+                    }));
+
+                return messages.sort((a,b) => new Date(a.date) - new Date(b.date));
+            })() : [];
 
             // Pending tickets for this category (shown above active tickets in the list)
             const pendingTicketsThisCategory = pendingTicketCreates.filter(p => p.payload.category === activeTab);
@@ -451,7 +505,7 @@
                         <div className="flex justify-between items-start mb-3">
                             <div>
                                 <div className="flex items-center gap-2 flex-wrap">
-                                    <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Manager Sync</span>
+                                    <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Approval</span>
                                     {item.editedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
                                 </div>
                                 <p className="text-white font-black text-sm mt-2">
@@ -497,7 +551,7 @@
                         {/* Manager actions */}
                         {isMgr && (
                             <div className="flex gap-2 mt-4 pt-3 border-t border-slate-800">
-                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className={`flex-1 bg-${accentColor}-500 hover:bg-${accentColor}-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all`}>✓ Review & Sync</button>
+                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className={`flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all`}>✓ Approve</button>
                                 {canEdit && (
                                     <button onClick={() => {
                                         setEditingPending(item);
@@ -511,7 +565,7 @@
 
                         {!isMgr && (
                             <div className="mt-3 pt-3 border-t border-slate-800">
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager to sync...</p>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager approval...</p>
                             </div>
                         )}
                     </div>
@@ -603,7 +657,7 @@
                         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6 animate-fade-in">
                             <div className="bg-[#161b22] border border-emerald-500/30 rounded-[2rem] p-8 max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar">
                                 <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-800">
-                                    <h2 className="text-sm font-black text-emerald-500 tracking-widest uppercase">✓ Review & Sync</h2>
+                                    <h2 className="text-sm font-black text-emerald-500 tracking-widest uppercase">✓ Approve & Save to Sheet</h2>
                                     <button onClick={() => { setSyncingItem(null); setSyncOverrides({}); }} className="text-slate-500 hover:text-white text-xl">✕</button>
                                 </div>
                                 <p className="text-[10px] text-slate-500 font-bold uppercase mb-4">You can edit any field before committing to the sheet. Leave blank to keep original value.</p>
@@ -666,7 +720,7 @@
                                                     <input defaultValue={p.links} onChange={(e) => setSyncOverrides({...syncOverrides, links: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold mt-1"/></div>
                                             )}
                                             <button onClick={() => syncPending(syncingItem.id, syncOverrides)} disabled={status === 'syncing'} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-50 transition-all mt-4">
-                                                {status === 'syncing' ? 'Committing...' : '✓ Commit to Sheet'}
+                                                {status === 'syncing' ? 'Approving...' : '✓ Approve & Save'}
                                             </button>
                                         </div>
                                     );
@@ -719,7 +773,7 @@
                                         </div>
                                     </div>
                                     <button onClick={handleStandardSubmit} disabled={!orderId || !courier || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && courier && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
-                                        {status === 'syncing' ? 'SUBMITTING...' : 'SUBMIT FOR APPROVAL'}
+                                        {status === 'syncing' ? 'SENDING...' : (userRole === "MANAGER" ? 'SEND REQUEST' : 'SEND SUBMISSION')}
                                     </button>
                                 </div>
                             </div>
@@ -727,7 +781,7 @@
                             {/* PENDING SUBMISSIONS — visible to Manager only */}
                             {userRole === "MANAGER" && pendingStandard.length > 0 && (
                                 <div>
-                                    <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Pending Sync ({pendingStandard.length})</h2>
+                                    <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingStandard.length})</h2>
                                     {pendingStandard.map(item => <PendingCard key={item.id} item={item} accentColor="blue" />)}
                                 </div>
                             )}
@@ -788,7 +842,7 @@
                                             <span className="text-slate-400 text-xs font-bold uppercase">{recallFiles.length > 0 ? `${recallFiles.length} Extra File(s)` : '📎 Attach Photos / PDFs'}</span>
                                         </div>
                                         <button onClick={initiateRecall} disabled={!recallOrderId || status === 'syncing'} className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-sm disabled:opacity-50 transition-all">
-                                            {status === 'syncing' ? 'Submitting...' : 'Submit Recall Request'}
+                                            {status === 'syncing' ? 'Sending...' : 'Send Request to Supplier'}
                                         </button>
                                     </div>
                                 </div>
@@ -797,7 +851,7 @@
                             {/* PENDING SYNC — Manager only */}
                             {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length) > 0 && (
                                 <div>
-                                    <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Pending Sync ({pendingRecallInits.length + pendingRecallCompletes.length})</h2>
+                                    <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingRecallInits.length + pendingRecallCompletes.length})</h2>
                                     {pendingRecallInits.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
                                     {pendingRecallCompletes.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
                                 </div>
@@ -831,11 +885,11 @@
                                                     <div className="flex items-center gap-2 flex-wrap mb-1">
                                                         <p className="text-white font-black text-lg">{rec.orderId}</p>
                                                         {showEditedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
-                                                        {rec._isVirtual && <span className="text-[9px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-1 rounded-full">Pre-Sync Request</span>}
+                                                        {rec._isVirtual && <span className="text-[9px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-1 rounded-full">Pending Manager Approval</span>}
                                                     </div>
-                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest">Pending Supplier Action</p>
+                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest">{rec._isVirtual ? "Waiting for Manager to approve request" : "Pending Supplier Action"}</p>
                                                 </div>
-                                                {resolvingId !== rec.orderId && (
+                                                {resolvingId !== rec.orderId && !rec._isVirtual && (
                                                     <button onClick={() => { setResolvingId(rec.orderId); setCourier(''); resetRecallForm(); }} className="border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all">Complete Form</button>
                                                 )}
                                             </div>
@@ -875,7 +929,7 @@
                                                     <div className="flex gap-2 pt-2">
                                                         <button onClick={() => { setResolvingId(null); setCourier(''); }} className="flex-1 bg-slate-800 text-slate-400 py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-slate-700">Cancel</button>
                                                         <button onClick={() => completeRecall(rec.orderId)} disabled={!trackingNumber || !courier || !productCost || !returnFee || status === 'syncing'} className="flex-[2] bg-orange-500 text-white py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-orange-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all">
-                                                            {status === 'syncing' ? 'Submitting...' : 'Submit Resolution'}
+                                                            {status === 'syncing' ? 'Sending...' : (userRole === "MANAGER" ? 'Send Resolution' : 'Send Reply to Manager')}
                                                         </button>
                                                     </div>
                                                 </div>
@@ -930,7 +984,7 @@
                                     {/* PENDING SYNC (Manager) — pending ticket creates + replies for this category */}
                                     {userRole === "MANAGER" && pendingTicketsThisCategory.length > 0 && (
                                         <div className="mb-6">
-                                            <h2 className="text-[10px] font-black text-purple-400 tracking-[0.2em] uppercase mb-4">🔔 Pending New Tickets ({pendingTicketsThisCategory.length})</h2>
+                                            <h2 className="text-[10px] font-black text-purple-400 tracking-[0.2em] uppercase mb-4">🔔 Awaiting Approval ({pendingTicketsThisCategory.length})</h2>
                                             {pendingTicketsThisCategory.map(item => <PendingCard key={item.id} item={item} accentColor="purple" />)}
                                         </div>
                                     )}
@@ -939,10 +993,21 @@
                                     <div className="space-y-4 mb-8">
                                         {filteredActiveTickets.length === 0 && pendingTicketsThisCategory.length === 0 && <p className="text-slate-500 text-xs italic text-center py-4">No active tickets.</p>}
                                         {filteredActiveTickets.map((t, i) => {
-                                            const hasPendingReply = pendingTicketReplies.some(p => String(p.payload.ticketId) === String(t.ticketId));
+                                            const isVirtual = t._isVirtual;
+                                            const hasPendingReply = !isVirtual && pendingTicketReplies.some(p => String(p.payload.ticketId) === String(t.ticketId));
+                                            const showEdited = isVirtual && t._editedBadge && userRole !== "MANAGER";
                                             return (
-                                                <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : ""); }} className={`bg-[#0b0e14] border ${hasPendingReply ? 'border-yellow-500/50' : 'border-slate-700'} hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group`}>
-                                                    <div><div className="flex items-center gap-3 mb-1 flex-wrap"><span className="text-white font-black text-sm">{t.orderId}</span><span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span>{hasPendingReply && userRole === "MANAGER" && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">Pending Reply</span>}</div></div>
+                                                <div key={i} onClick={() => {
+                                                    if (showEdited) clearEditedBadge(t._pendingId);
+                                                    setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : "");
+                                                }} className={`bg-[#0b0e14] border ${isVirtual ? 'border-orange-500/50' : hasPendingReply ? 'border-yellow-500/50' : 'border-slate-700'} hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group`}>
+                                                    <div><div className="flex items-center gap-3 mb-1 flex-wrap">
+                                                        <span className="text-white font-black text-sm">{t.orderId}</span>
+                                                        <span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span>
+                                                        {isVirtual && <span className="text-[9px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded-full">Pending Manager Approval</span>}
+                                                        {showEdited && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">✏️ Edited</span>}
+                                                        {hasPendingReply && userRole === "MANAGER" && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">Pending Reply</span>}
+                                                    </div></div>
                                                     <div className="text-right"><span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${t.status === 'Waiting on Supplier' ? 'bg-orange-500/20 text-orange-400' : 'bg-purple-500/20 text-purple-400'}`}>{t.status}</span></div>
                                                 </div>
                                             );
@@ -974,7 +1039,7 @@
                                             <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
                                             {hdFiles.length > 0 ? <p className="text-purple-400 font-bold text-xs uppercase">{hdFiles.length} File(s) Attached</p> : <p className="text-slate-500 text-xs font-bold uppercase">Attach Files (PDF, JPG, PNG)</p>}
                                         </div>
-                                        <button onClick={submitNewTicket} disabled={!hdOrderId || !hdStatus || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Submitting...' : 'Submit for Approval'}</button>
+                                        <button onClick={submitNewTicket} disabled={!hdOrderId || !hdStatus || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Request to Supplier'}</button>
                                     </div>
                                 </div>
                             )}
@@ -990,14 +1055,14 @@
                                             const isMe = msg.role === userRole;
                                             return (
                                                 <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && <span className="text-yellow-400">• ⏳ Awaiting Manager Sync</span>}</span>
+                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && <span className="text-yellow-400">• ⏳ Awaiting Approval</span>}</span>
                                                     <div className={`p-4 rounded-2xl max-w-[85%] ${msg._pending ? 'bg-yellow-500/10 border border-yellow-500/30 text-slate-200' : isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
                                                         {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
                                                         {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
                                                         {msg.files && msg.files.length > 0 && <div className="mt-3 flex gap-2 flex-wrap">{msg.files.map((url, idx) => <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>)}</div>}
                                                         {msg._pending && userRole === "MANAGER" && (
                                                             <div className="mt-3 pt-3 border-t border-yellow-500/20 flex gap-2">
-                                                                <button onClick={() => { const item = pending.find(p => p.id === msg._pendingId); if (item) { setSyncingItem(item); setSyncOverrides({}); }}} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Sync Reply</button>
+                                                                <button onClick={() => { const item = pending.find(p => p.id === msg._pendingId); if (item) { setSyncingItem(item); setSyncOverrides({}); }}} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Approve Reply</button>
                                                                 <button onClick={() => discardPending(msg._pendingId)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-3 py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">Discard</button>
                                                             </div>
                                                         )}
@@ -1006,7 +1071,11 @@
                                             )
                                         })}
                                     </div>
-                                    {activeTicket.status !== 'Closed' && (
+                                    {activeTicket._isVirtual ? (
+                                        <div className="p-6 border-t border-slate-800 bg-orange-500/5">
+                                            <p className="text-center text-orange-400 text-xs font-black uppercase tracking-widest">⏳ This ticket is pending Manager approval. Once approved, replies will be enabled.</p>
+                                        </div>
+                                    ) : activeTicket.status !== 'Closed' && (
                                         <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
                                             <div className="space-y-3">
                                                 <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
@@ -1024,7 +1093,7 @@
                                                         <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
                                                     </div>
                                                 </div>
-                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Submitting...' : 'Submit Reply for Approval'}</button>
+                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : (userRole === "MANAGER" ? 'Send Reply' : 'Send Reply to Manager')}</button>
                                             </div>
                                         </div>
                                     )}
