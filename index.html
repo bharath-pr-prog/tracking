@@ -541,108 +541,96 @@
                 );
             };
 
-            // Single pending card row used in every tab's "Pending Sync" section
+            // Single pending card — unified chat thread + one Approve at bottom
             const PendingCard = ({ item, accentColor }) => {
                 const p = item.payload || {};
-                const isMine = item.createdBy === userEmail;
                 const isMgr = userRole === "MANAGER";
-                const locked = isManagerRequestLocked(item);
-                const canEdit = isMgr && !locked && (item.type === 'recall_initiate' || item.type === 'ticket_create');
+                const canEdit = isMgr && (item.type === 'recall_initiate' || item.type === 'ticket_create') && !isManagerRequestLocked(item);
+
+                // Build unified thread: payload msg first, then all Communications for this item
+                const threadMsgs = [];
+                if (p.comment || (p.ticketFiles && p.ticketFiles.length > 0)) {
+                    threadMsgs.push({
+                        date: item.createdAt, author: item.createdBy, role: item.createdByRole,
+                        comment: p.comment || "", links: p.links || "", files: p.ticketFiles || []
+                    });
+                }
+                // All saved comms keyed by item.id (messages sent after ticket was created)
+                communications.filter(c => String(c.refId) === String(item.id))
+                    .sort((a,b) => new Date(a.date) - new Date(b.date))
+                    .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
 
                 return (
-                    <div className={`bg-[#0b0e14] border border-${accentColor}-500/30 rounded-2xl p-5 mb-3 animate-fade-in`}>
-                        <div className="flex justify-between items-start mb-3">
+                    <div className={`bg-[#0b0e14] border border-${accentColor}-500/30 rounded-2xl mb-3 animate-fade-in overflow-hidden`}>
+                        {/* Header */}
+                        <div className="flex justify-between items-center px-5 pt-5 pb-3 border-b border-slate-800">
                             <div>
-                                <div className="flex items-center gap-2 flex-wrap">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
                                     <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Approval</span>
                                     {item.editedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
                                 </div>
-                                <p className="text-white font-black text-sm mt-2">
-                                    {p.orderId || p.ticketId || "—"}
-                                    {p.category && <span className="text-[10px] text-slate-500 ml-2 font-bold">{p.category}</span>}
-                                </p>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">
-                                    From: {item.createdBy} ({item.createdByRole}) • {new Date(item.createdAt).toLocaleString()}
-                                </p>
+                                <p className="text-white font-black text-sm">{p.orderId || "—"} {p.category && <span className="text-[10px] text-slate-500 font-bold ml-1">{p.category}</span>}</p>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase">{item.createdBy} • {new Date(item.createdAt).toLocaleString()}</p>
                             </div>
                         </div>
 
-                        {/* Payload details */}
-                        <div className="text-xs text-slate-300 space-y-1 mb-3">
-                            {p.trackingNumber && p.trackingNumber !== "No Tracking" && <p><span className="text-slate-500 font-bold">Tracking:</span> {p.trackingNumber}</p>}
-                            {p.courier && p.courier !== "N/A" && <p><span className="text-slate-500 font-bold">Courier:</span> {p.courier}</p>}
-                            {p.productCost && <p><span className="text-slate-500 font-bold">Cost:</span> ${p.productCost} • <span className="text-slate-500 font-bold">Fee:</span> ${p.returnFee} • <span className="text-slate-500 font-bold">Refund:</span> ${p.refundAmount}</p>}
-                            {p.status && <p><span className="text-slate-500 font-bold">Status:</span> {p.status}</p>}
-                            {p.comment && <p className="italic text-slate-400">"{p.comment}"</p>}
-                            {p.links && <a href={p.links} target="_blank" className="text-blue-400 underline break-all block">{p.links}</a>}
-                            {p.ticketFiles && p.ticketFiles.length > 0 && (
-                                <div className="flex gap-2 flex-wrap mt-2">
-                                    {p.ticketFiles.map((url, i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">📎 File {i+1}</a>)}
-                                </div>
-                            )}
-                            {p.images && p.images.length > 0 && (
-                                <div className="flex gap-2 flex-wrap mt-2">
-                                    {p.images.map((url, i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">🏷️ Label {i+1}</a>)}
-                                </div>
-                            )}
-                        </div>
+                        {/* Structured data (tracking/costs) for recalls and standard */}
+                        {(p.trackingNumber || p.productCost) && (
+                            <div className="px-5 py-3 border-b border-slate-800 text-xs text-slate-300 space-y-1">
+                                {p.trackingNumber && p.trackingNumber !== "No Tracking" && <p><span className="text-slate-500 font-bold">Tracking:</span> {p.trackingNumber}</p>}
+                                {p.courier && p.courier !== "N/A" && <p><span className="text-slate-500 font-bold">Courier:</span> {p.courier}</p>}
+                                {p.productCost && <p><span className="text-slate-500 font-bold">Cost:</span> ${p.productCost} • <span className="text-slate-500 font-bold">Fee:</span> ${p.returnFee} • <span className="text-slate-500 font-bold">Refund:</span> ${p.refundAmount}</p>}
+                                {p.status && <p><span className="text-slate-500 font-bold">Status:</span> {p.status}</p>}
+                                {p.images && p.images.length > 0 && <div className="flex gap-2 flex-wrap">{p.images.map((url,i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">🏷️ Label {i+1}</a>)}</div>}
+                            </div>
+                        )}
 
-                        {/* Supplier replies to this pending ticket (keyed by item.id) */}
-                        {(() => {
-                            const linkedReplies = pending.filter(p => p.type === 'ticket_reply' && String(p.payload.ticketId) === String(item.id));
-                            if (linkedReplies.length === 0) return null;
-                            return (
-                                <div className="mt-3 pt-3 border-t border-slate-700 space-y-3">
-                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">💬 Supplier Replies ({linkedReplies.length})</p>
-                                    {linkedReplies.map((reply, ri) => (
-                                        <div key={ri} className="bg-slate-800/50 border border-slate-700 rounded-xl p-3">
-                                            <p className="text-[9px] font-bold text-slate-500 uppercase mb-1">{reply.createdBy} ({reply.createdByRole}) • {new Date(reply.createdAt).toLocaleString()}</p>
-                                            {reply.payload.comment && <p className="text-xs text-slate-200 italic">"{reply.payload.comment}"</p>}
-                                            {reply.payload.links && <a href={reply.payload.links} target="_blank" className="text-[10px] text-blue-400 underline break-all block mt-1">{reply.payload.links}</a>}
-                                            {reply.payload.ticketFiles && reply.payload.ticketFiles.length > 0 && (
-                                                <div className="flex gap-2 flex-wrap mt-2">
-                                                    {reply.payload.ticketFiles.map((url, fi) => <a key={fi} href={url} target="_blank" className="bg-slate-900 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">📎 File {fi+1}</a>)}
-                                                </div>
-                                            )}
-                                            {isMgr && (
-                                                <div className="flex gap-2 mt-2 pt-2 border-t border-slate-700">
-                                                    <button onClick={() => { setSyncingItem(reply); setSyncOverrides({}); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-1.5 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Approve Reply</button>
-                                                    <button onClick={() => discardPending(reply.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-3 py-1.5 rounded-lg font-black text-[10px] uppercase transition-all">✕</button>
-                                                </div>
-                                            )}
+                        {/* Unified chat thread */}
+                        {threadMsgs.length > 0 && (
+                            <div className="px-5 py-4 space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
+                                {threadMsgs.map((msg, i) => {
+                                    const isMe = msg.role === userRole;
+                                    return (
+                                        <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                            <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
+                                            <div className={`px-4 py-2.5 rounded-2xl max-w-[85%] text-sm ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                                {msg.comment && <p className="whitespace-pre-wrap font-medium">{msg.comment}</p>}
+                                                {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs underline mt-1 block break-all">{msg.links}</a>}
+                                                {msg.files && msg.files.length > 0 && <div className="mt-2 flex gap-1 flex-wrap">{msg.files.map((url,fi) => <a key={fi} href={url} target="_blank" className="bg-slate-900 px-2 py-0.5 rounded text-[10px] text-slate-300 hover:text-white">📎 {fi+1}</a>)}</div>}
+                                            </div>
                                         </div>
-                                    ))}
-                                </div>
-                            );
-                        })()}
+                                    );
+                                })}
+                            </div>
+                        )}
 
                         {/* Edit history */}
                         {item.edits && item.edits.length > 0 && (
-                            <div className="mt-3 p-2 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
-                                <p className="text-[9px] font-black text-yellow-400 uppercase tracking-widest mb-1">Edit History</p>
+                            <div className="mx-5 mb-3 p-2 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
                                 {item.edits.map((ed, i) => (
                                     <p key={i} className="text-[10px] text-slate-400 italic">[{new Date(ed.editedAt).toLocaleString()}] {ed.editedBy}: {ed.changes.join("; ")}</p>
                                 ))}
                             </div>
                         )}
 
-                        {/* Manager actions */}
+                        {/* Manager actions — ONE Approve for the whole item */}
                         {isMgr && (
-                            <div className="flex gap-2 mt-4 pt-3 border-t border-slate-800">
-                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className={`flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all`}>✓ Approve</button>
+                            <div className="flex gap-2 px-5 pb-5 pt-3 border-t border-slate-800">
+                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✓ Approve</button>
                                 {canEdit && (
                                     <button onClick={() => {
                                         setEditingPending(item);
                                         setEditForm({ orderId: p.orderId || '', status: p.status || '', comment: p.comment || '', links: p.links || '' });
                                         setEditFiles([]); setEditBase64([]);
-                                    }} className="flex-1 bg-yellow-500/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-500/30 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✏️ Edit Request</button>
+                                    }} className="flex-1 bg-yellow-500/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-500/30 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✏️ Edit</button>
                                 )}
                                 <button onClick={() => discardPending(item.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-4 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✕</button>
                             </div>
                         )}
 
+                        {/* Supplier view — just shows waiting */}
                         {!isMgr && (
-                            <div className="mt-3 pt-3 border-t border-slate-800">
+                            <div className="px-5 pb-4 pt-2 border-t border-slate-800">
                                 <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager approval...</p>
                             </div>
                         )}
