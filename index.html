@@ -320,7 +320,10 @@
                     category: activeTicket.category, status: hdStatus,
                     comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files
                 });
-                setActiveTicket(null); resetHelpdeskForm();
+                // Keep ticket open, just clear the form so user can continue chatting
+                setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
+                if (userRole !== "MANAGER") setHdStatus("Waiting on Agent");
+                else setHdStatus('');
             };
 
             // ============================================================
@@ -885,11 +888,10 @@
                                                     <div className="flex items-center gap-2 flex-wrap mb-1">
                                                         <p className="text-white font-black text-lg">{rec.orderId}</p>
                                                         {showEditedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
-                                                        {rec._isVirtual && <span className="text-[9px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-1 rounded-full">Pending Manager Approval</span>}
                                                     </div>
-                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest">{rec._isVirtual ? "Waiting for Manager to approve request" : "Pending Supplier Action"}</p>
+                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest">Pending Supplier Action</p>
                                                 </div>
-                                                {resolvingId !== rec.orderId && !rec._isVirtual && (
+                                                {resolvingId !== rec.orderId && (
                                                     <button onClick={() => { setResolvingId(rec.orderId); setCourier(''); resetRecallForm(); }} className="border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all">Complete Form</button>
                                                 )}
                                             </div>
@@ -1000,11 +1002,10 @@
                                                 <div key={i} onClick={() => {
                                                     if (showEdited) clearEditedBadge(t._pendingId);
                                                     setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : "");
-                                                }} className={`bg-[#0b0e14] border ${isVirtual ? 'border-orange-500/50' : hasPendingReply ? 'border-yellow-500/50' : 'border-slate-700'} hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group`}>
+                                                }} className={`bg-[#0b0e14] border ${hasPendingReply ? 'border-yellow-500/50' : 'border-slate-700'} hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group`}>
                                                     <div><div className="flex items-center gap-3 mb-1 flex-wrap">
                                                         <span className="text-white font-black text-sm">{t.orderId}</span>
                                                         <span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span>
-                                                        {isVirtual && <span className="text-[9px] font-black uppercase tracking-widest text-orange-400 bg-orange-500/10 px-2 py-0.5 rounded-full">Pending Manager Approval</span>}
                                                         {showEdited && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">✏️ Edited</span>}
                                                         {hasPendingReply && userRole === "MANAGER" && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">Pending Reply</span>}
                                                     </div></div>
@@ -1055,8 +1056,8 @@
                                             const isMe = msg.role === userRole;
                                             return (
                                                 <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && <span className="text-yellow-400">• ⏳ Awaiting Approval</span>}</span>
-                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${msg._pending ? 'bg-yellow-500/10 border border-yellow-500/30 text-slate-200' : isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && userRole === "MANAGER" && <span className="text-yellow-400">• ⏳ Awaiting Approval</span>}</span>
+                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${msg._pending && userRole === "MANAGER" ? 'bg-yellow-500/10 border border-yellow-500/30 text-slate-200' : isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
                                                         {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
                                                         {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
                                                         {msg.files && msg.files.length > 0 && <div className="mt-3 flex gap-2 flex-wrap">{msg.files.map((url, idx) => <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>)}</div>}
@@ -1071,12 +1072,7 @@
                                             )
                                         })}
                                     </div>
-                                    {activeTicket._isVirtual ? (
-                                        <div className="p-6 border-t border-slate-800 bg-orange-500/5">
-                                            <p className="text-center text-orange-400 text-xs font-black uppercase tracking-widest">⏳ This ticket is pending Manager approval. Once approved, replies will be enabled.</p>
-                                        </div>
-                                    ) : activeTicket.status !== 'Closed' && (
-                                        <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
+                                    <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
                                             <div className="space-y-3">
                                                 <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
                                                 <div className="flex gap-3">
@@ -1093,10 +1089,9 @@
                                                         <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
                                                     </div>
                                                 </div>
-                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : (userRole === "MANAGER" ? 'Send Reply' : 'Send Reply to Manager')}</button>
+                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Reply'}</button>
                                             </div>
                                         </div>
-                                    )}
                                 </div>
                             )}
                         </div>
