@@ -547,6 +547,43 @@
                 const isMgr = userRole === "MANAGER";
                 const canEdit = isMgr && (item.type === 'recall_initiate' || item.type === 'ticket_create') && !isManagerRequestLocked(item);
 
+                // Local reply state per card
+                const [cardReply, setCardReply] = React.useState('');
+                const [cardLinks, setCardLinks] = React.useState('');
+                const [cardSending, setCardSending] = React.useState(false);
+
+                const sendCardMessage = async () => {
+                    if (!cardReply && !cardLinks) return;
+                    setCardSending(true);
+                    const msg = cardReply;
+                    const lnk = cardLinks;
+                    try {
+                        await postAction({
+                            action: 'send_message',
+                            token,
+                            refId: item.id,
+                            comment: msg,
+                            links: lnk,
+                            ticketFiles: [],
+                            orderId: p.orderId,
+                            category: p.category
+                        });
+                        // Optimistically add to communications
+                        setCommunications(prev => [...prev, {
+                            date: new Date().toISOString(),
+                            refId: item.id,
+                            author: userEmail,
+                            role: userRole,
+                            comment: msg,
+                            links: lnk,
+                            files: [],
+                            _optimistic: true
+                        }]);
+                        setCardReply(''); setCardLinks('');
+                        setTimeout(() => { setCardSending(false); loadDatabase(); }, 2000);
+                    } catch(e) { setCardSending(false); }
+                };
+
                 // Build unified thread: payload msg first, then all Communications for this item
                 const threadMsgs = [];
                 if (p.comment || (p.ticketFiles && p.ticketFiles.length > 0)) {
@@ -555,9 +592,10 @@
                         comment: p.comment || "", links: p.links || "", files: p.ticketFiles || []
                     });
                 }
-                // All saved comms keyed by item.id (messages sent after ticket was created)
+                // All saved comms keyed by item.id
                 communications.filter(c => String(c.refId) === String(item.id))
                     .sort((a,b) => new Date(a.date) - new Date(b.date))
+                    .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
                     .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
 
                 return (
@@ -610,6 +648,32 @@
                                 {item.edits.map((ed, i) => (
                                     <p key={i} className="text-[10px] text-slate-400 italic">[{new Date(ed.editedAt).toLocaleString()}] {ed.editedBy}: {ed.changes.join("; ")}</p>
                                 ))}
+                            </div>
+                        )}
+
+                        {/* Manager reply box — directly inside the card */}
+                        {isMgr && (
+                            <div className="px-5 pb-4 pt-3 border-t border-slate-800 space-y-2">
+                                <textarea
+                                    value={cardReply}
+                                    onChange={(e) => setCardReply(e.target.value)}
+                                    placeholder="Reply to supplier..."
+                                    rows="2"
+                                    className="w-full bg-[#161b22] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs custom-scrollbar resize-none"
+                                />
+                                <div className="flex gap-2">
+                                    <input
+                                        value={cardLinks}
+                                        onChange={(e) => setCardLinks(e.target.value)}
+                                        placeholder="Links (Opt)"
+                                        className="flex-1 bg-[#161b22] border border-slate-700 rounded-xl p-2.5 text-white outline-none focus:border-purple-500 font-bold text-xs"
+                                    />
+                                    <button
+                                        onClick={sendCardMessage}
+                                        disabled={!cardReply && !cardLinks}
+                                        className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase disabled:opacity-30 transition-all"
+                                    >{cardSending ? 'Sending...' : '➤ Send'}</button>
+                                </div>
                             </div>
                         )}
 
