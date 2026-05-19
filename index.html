@@ -15,6 +15,10 @@
         .custom-scrollbar::-webkit-scrollbar { height: 5px; width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #0b0e14; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.25s ease-out; }
+        @keyframes pulseRing { 0%,100% { box-shadow: 0 0 0 0 rgba(250,204,21,0.4); } 50% { box-shadow: 0 0 0 6px rgba(250,204,21,0); } }
+        .pulse-ring { animation: pulseRing 1.8s infinite; }
     </style>
 </head>
 <body>
@@ -22,38 +26,42 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // --- PASTE YOUR NEW APPS SCRIPT DEPLOYMENT URL HERE ---
-        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxI3C282OWdPEYU9jf2fnBLzTTMa7L0kqMjpPwaesMhURIKtS3DPW-B1VxKrs9SccUX/exec"; 
-        const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com"; 
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbz_3qDJmYs4uASWNgsJa7VEz-lrfUxfQFMo5hsEt73dPyhna7VQONNn4WiuzIIXouan/exec";
+        const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com";
+        const ITEMS_PER_PAGE = 50;
 
-        const ITEMS_PER_PAGE = 50; 
+        // Helper: fire-and-forget POST (Apps Script CORS workaround)
+        const postAction = (payload) => fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
 
         function App() {
             const [isAuth, setIsAuth] = useState(false);
             const [token, setToken] = useState(null);
             const [authError, setAuthError] = useState("");
-            const [userRole, setUserRole] = useState("SUPPLIER"); 
-            
-            const [activeTab, setActiveTab] = useState('scanner'); 
+            const [userRole, setUserRole] = useState("SUPPLIER");
+            const [userEmail, setUserEmail] = useState("");
+
+            const [activeTab, setActiveTab] = useState('scanner');
             const [dbRecords, setDbRecords] = useState([]);
-            const [tickets, setTickets] = useState([]); 
-            const [communications, setCommunications] = useState([]); 
+            const [tickets, setTickets] = useState([]);
+            const [communications, setCommunications] = useState([]);
+            const [pending, setPending] = useState([]); // NEW: pending items from PropertiesService
             const [status, setStatus] = useState('idle');
-            
+
             const [searchQuery, setSearchQuery] = useState('');
             const [currentPage, setCurrentPage] = useState(1);
 
             useEffect(() => { setCurrentPage(1); }, [activeTab, searchQuery]);
 
+            // ---------- Standard Scan form state ----------
             const [orderId, setOrderId] = useState('');
-            const [trackingNumber, setTrackingNumber] = useState(''); 
-            const [courier, setCourier] = useState(''); 
+            const [trackingNumber, setTrackingNumber] = useState('');
+            const [courier, setCourier] = useState('');
             const [productCost, setProductCost] = useState('');
             const [returnFee, setReturnFee] = useState('');
             const [files, setFiles] = useState([]);
             const [base64Images, setBase64Images] = useState([]);
             const fileInputRef = useRef(null);
-            
+
             const [stdStatus, setStdStatus] = useState('Closed');
             const [stdComment, setStdComment] = useState('');
             const [stdLinks, setStdLinks] = useState('');
@@ -61,8 +69,9 @@
             const [stdExtraBase64, setStdExtraBase64] = useState([]);
             const stdExtraInputRef = useRef(null);
 
+            // ---------- Recalls state ----------
             const [recallOrderId, setRecallOrderId] = useState('');
-            const [resolvingId, setResolvingId] = useState(null); 
+            const [resolvingId, setResolvingId] = useState(null);
             const [recallStatus, setRecallStatus] = useState('Waiting on Supplier');
             const [recallComment, setRecallComment] = useState('');
             const [recallLinks, setRecallLinks] = useState('');
@@ -70,9 +79,9 @@
             const [recallBase64, setRecallBase64] = useState([]);
             const recallFileInputRef = useRef(null);
 
+            // ---------- Helpdesk state ----------
             const [activeTicket, setActiveTicket] = useState(null);
             const [showCreateTicket, setShowCreateTicket] = useState(false);
-            
             const [hdOrderId, setHdOrderId] = useState('');
             const [hdStatus, setHdStatus] = useState('');
             const [hdComment, setHdComment] = useState('');
@@ -81,15 +90,29 @@
             const [hdBase64Files, setHdBase64Files] = useState([]);
             const hdFileInputRef = useRef(null);
 
+            // ---------- Edit Manager Request modal state ----------
+            const [editingPending, setEditingPending] = useState(null); // pending item being edited
+            const [editForm, setEditForm] = useState({ orderId: '', status: '', comment: '', links: '' });
+            const [editFiles, setEditFiles] = useState([]);
+            const [editBase64, setEditBase64] = useState([]);
+            const editFileInputRef = useRef(null);
+
+            // ---------- Sync modal state (Manager opens a pending item before committing) ----------
+            const [syncingItem, setSyncingItem] = useState(null);
+            const [syncOverrides, setSyncOverrides] = useState({});
+
             const HELPDESK_TABS = [
                 { id: "Tracking related issue", label: "Tracking" },
                 { id: "Damage claims replacement/reship request", label: "Damage Claims" },
                 { id: "General issues", label: "Issues" },
                 { id: "Order modification", label: "Order Mods" },
-                { id: "Refund request", label: "Refund Requests" } 
+                { id: "Refund request", label: "Refund Requests" }
             ];
             const HELPDESK_CATEGORIES = HELPDESK_TABS.map(t => t.id);
 
+            // ============================================================
+            //  AUTH
+            // ============================================================
             const handleCredentialResponse = async (response) => {
                 const jwtToken = response.credential;
                 setAuthError("Verifying with secure database...");
@@ -101,9 +124,11 @@
                     } else {
                         setToken(jwtToken);
                         setUserRole(data.role ? data.role.toUpperCase() : "SUPPLIER");
+                        setUserEmail(data.email || "");
                         setDbRecords(Array.isArray(data.records) ? data.records : []);
                         setTickets(Array.isArray(data.tickets) ? data.tickets : []);
                         setCommunications(Array.isArray(data.communications) ? data.communications : []);
+                        setPending(Array.isArray(data.pending) ? data.pending : []);
                         setIsAuth(true);
                         setAuthError("");
                     }
@@ -130,11 +155,16 @@
                     if (Array.isArray(data.records)) setDbRecords(data.records);
                     if (Array.isArray(data.tickets)) setTickets(data.tickets);
                     if (Array.isArray(data.communications)) setCommunications(data.communications);
+                    if (Array.isArray(data.pending)) setPending(data.pending);
                 } catch (e) {}
             };
 
+            // ============================================================
+            //  HELPERS
+            // ============================================================
             const switchTab = (tabName) => {
                 setActiveTab(tabName); setShowCreateTicket(false); setActiveTicket(null); setSearchQuery('');
+                setEditingPending(null); setSyncingItem(null); setResolvingId(null);
             };
 
             const processFiles = async (e, setFileState, setBase64State) => {
@@ -151,33 +181,69 @@
                 } catch (err) { setStatus('idle'); }
             };
 
-            // --- THE NEW MANAGER APPROVAL LOGIC ---
-            const handleApproveRecord = async (recordId, recordType) => {
-                setStatus('syncing');
-                const payload = { action: "approve_record", token, recordId, recordType };
-                try {
-                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) });
-                    setStatus('success');
-                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
-                } catch (e) { setStatus('idle'); }
-            };
-
             const resetHelpdeskForm = () => { setHdOrderId(''); setHdStatus(''); setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]); };
             const resetRecallForm = () => { setRecallStatus(userRole === "MANAGER" ? 'Waiting on Supplier' : 'Waiting on Agent'); setRecallComment(''); setRecallLinks(''); setRecallFiles([]); setRecallBase64([]); };
             const resetStdForm = () => { setOrderId(''); setProductCost(''); setReturnFee(''); setTrackingNumber(''); setCourier(''); setFiles([]); setBase64Images([]); setStdStatus('Closed'); setStdComment(''); setStdLinks(''); setStdExtraFiles([]); setStdExtraBase64([]); };
 
-            const submitNewTicket = async () => {
-                setStatus('syncing_ticket');
-                const payload = { action: "create_ticket", token, orderId: hdOrderId, category: activeTab, status: hdStatus, comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files };
-                try { await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) }); setTimeout(() => { setShowCreateTicket(false); resetHelpdeskForm(); setStatus('idle'); loadDatabase(); }, 1500); } catch (e) { setStatus('idle'); }
+            // Submit anything to the pending store
+            const submitToPending = async (type, payload) => {
+                setStatus('syncing');
+                try {
+                    await postAction({ action: 'submit_pending', token, type, payload });
+                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
+                } catch (e) { setStatus('idle'); }
             };
 
-            const submitTicketReply = async () => {
-                setStatus('syncing_ticket');
-                const payload = { action: "update_ticket", token, ticketId: activeTicket.ticketId, userRole: userRole, status: hdStatus, comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files };
-                try { await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) }); setTimeout(() => { setActiveTicket(null); resetHelpdeskForm(); setStatus('idle'); loadDatabase(); }, 1500); } catch (e) { setStatus('idle'); }
+            // Manager edits a sent (still pending) request
+            const submitEdit = async () => {
+                if (!editingPending) return;
+                setStatus('syncing');
+                try {
+                    await postAction({
+                        action: 'edit_pending_request',
+                        token,
+                        pendingId: editingPending.id,
+                        payload: { ...editForm, ticketFiles: editBase64 }
+                    });
+                    setTimeout(() => {
+                        setEditingPending(null);
+                        setEditFiles([]); setEditBase64([]);
+                        setStatus('idle');
+                        loadDatabase();
+                    }, 1500);
+                } catch (e) { setStatus('idle'); }
             };
 
+            // Manager syncs a pending item to the sheets
+            const syncPending = async (pendingId, overrides) => {
+                setStatus('syncing');
+                try {
+                    await postAction({ action: 'sync_pending', token, pendingId, overrides: overrides || {} });
+                    setTimeout(() => {
+                        setSyncingItem(null); setSyncOverrides({});
+                        setStatus('idle'); loadDatabase();
+                    }, 1500);
+                } catch (e) { setStatus('idle'); }
+            };
+
+            // Manager discards a pending item
+            const discardPending = async (pendingId) => {
+                if (!confirm("Discard this pending submission? This cannot be undone.")) return;
+                setStatus('syncing');
+                try {
+                    await postAction({ action: 'discard_pending', token, pendingId });
+                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
+                } catch (e) { setStatus('idle'); }
+            };
+
+            // Supplier opens an edited Manager request → clear the badge
+            const clearEditedBadge = async (pendingId) => {
+                try { await postAction({ action: 'clear_edited_badge', token, pendingId }); } catch (e) {}
+            };
+
+            // ============================================================
+            //  STANDARD SCAN — OCR + Submit
+            // ============================================================
             const handleLabelUpload = async (e) => {
                 const upFiles = Array.from(e.target.files);
                 if (upFiles.length === 0) return;
@@ -191,38 +257,78 @@
                     }
                     setBase64Images(allBase64);
                     const cleanText = combinedText.toUpperCase().replace(/\n/g, ' ');
-                    let foundCourier = ""; 
-                    if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground"; else if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS"; else if (cleanText.includes("USPS")) foundCourier = "USPS"; else if (cleanText.includes("AMAZON") || cleanText.includes("TBA")) foundCourier = "Amazon";
+                    let foundCourier = "";
+                    if (cleanText.includes("FEDEX")) foundCourier = "FedEx Ground";
+                    else if (cleanText.includes("UPS") || cleanText.includes("1Z")) foundCourier = "UPS";
+                    else if (cleanText.includes("USPS")) foundCourier = "USPS";
+                    else if (cleanText.includes("AMAZON") || cleanText.includes("TBA")) foundCourier = "Amazon";
                     const matches = [...cleanText.matchAll(/(?:TRK|TRACKING|TRK#|TRKE)\s*[:#]?\s*([\d\s]{12,25})/gi)];
                     let uniqueTrks = [...new Set(matches.map(m => m[1].replace(/[^0-9]/g, '').substring(0, 12)).filter(d => d.length >= 12))];
                     if (uniqueTrks.length > 0 && foundCourier === "") foundCourier = "FedEx Ground";
                     if (uniqueTrks.length > 0) setTrackingNumber(uniqueTrks.join(" , "));
-                    if (foundCourier !== "") setCourier(foundCourier); 
-                    setStatus('idle'); 
+                    if (foundCourier !== "") setCourier(foundCourier);
+                    setStatus('idle');
                 } catch (err) { setStatus('idle'); }
             };
 
-            const handleSync = async () => {
-                setStatus('syncing');
+            const handleStandardSubmit = async () => {
                 const refund = (parseFloat(productCost) || 0) - (parseFloat(returnFee) || 0);
-                const payload = { action: "standard", token, orderId, trackingNumber: trackingNumber || "No Tracking", courier: courier || "N/A", images: base64Images, productCost, returnFee, refundAmount: refund.toFixed(2), status: stdStatus, comment: stdComment, links: stdLinks, ticketFiles: stdExtraBase64 };
-                try { await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) }); setStatus('success'); setTimeout(() => { resetStdForm(); setStatus('idle'); loadDatabase(); }, 1500); } catch (e) { setStatus('idle'); }
+                await submitToPending('standard', {
+                    orderId, trackingNumber: trackingNumber || "No Tracking", courier: courier || "N/A",
+                    images: base64Images, productCost, returnFee, refundAmount: refund.toFixed(2),
+                    status: stdStatus, comment: stdComment, links: stdLinks, ticketFiles: stdExtraBase64
+                });
+                resetStdForm();
             };
 
+            // ============================================================
+            //  RECALLS — Initiate (Manager) + Complete (Supplier)
+            // ============================================================
             const initiateRecall = async () => {
                 if (!recallOrderId) return;
-                setStatus('syncing_recall');
-                const payload = { action: "initiate_recall", token, orderId: recallOrderId, status: recallStatus, comment: recallComment, links: recallLinks, ticketFiles: recallBase64 };
-                try { await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) }); setTimeout(() => { setRecallOrderId(''); resetRecallForm(); setStatus('idle'); loadDatabase(); }, 1500); } catch (e) { setStatus('idle'); }
+                await submitToPending('recall_initiate', {
+                    orderId: recallOrderId, status: recallStatus,
+                    comment: recallComment, links: recallLinks, ticketFiles: recallBase64
+                });
+                setRecallOrderId(''); resetRecallForm();
             };
 
             const completeRecall = async (targetOrderId) => {
-                setStatus('syncing_recall_complete');
                 const refund = (parseFloat(productCost) || 0) - (parseFloat(returnFee) || 0);
-                const payload = { action: "complete_recall", token, orderId: targetOrderId, trackingNumber, courier, productCost, returnFee, refundAmount: refund.toFixed(2), status: recallStatus, comment: recallComment, links: recallLinks, ticketFiles: recallBase64 };
-                try { await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) }); setTimeout(() => { setResolvingId(null); resetStdForm(); resetRecallForm(); setStatus('idle'); loadDatabase(); }, 1500); } catch (e) { setStatus('idle'); }
+                await submitToPending('recall_complete', {
+                    orderId: targetOrderId, trackingNumber, courier, productCost, returnFee,
+                    refundAmount: refund.toFixed(2), status: recallStatus,
+                    comment: recallComment, links: recallLinks, ticketFiles: recallBase64
+                });
+                setResolvingId(null); resetStdForm(); resetRecallForm();
             };
 
+            // ============================================================
+            //  HELPDESK — Create + Reply
+            // ============================================================
+            const submitNewTicket = async () => {
+                await submitToPending('ticket_create', {
+                    orderId: hdOrderId, category: activeTab, status: hdStatus,
+                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files
+                });
+                setShowCreateTicket(false); resetHelpdeskForm();
+            };
+
+            const submitTicketReply = async () => {
+                await submitToPending('ticket_reply', {
+                    ticketId: activeTicket.ticketId, orderId: activeTicket.orderId,
+                    category: activeTicket.category, status: hdStatus,
+                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files
+                });
+                // Keep ticket open, just clear the form so user can continue chatting
+                setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
+                if (userRole !== "MANAGER") setHdStatus("Waiting on Agent");
+                else setHdStatus('');
+            };
+
+            // ============================================================
+            //  AUTH GATE
+            // ============================================================
             if (!isAuth) {
                 return (
                     <div className="min-h-screen flex items-center justify-center p-6 bg-[#0b0e14]">
@@ -236,14 +342,33 @@
                 );
             }
 
+            // ============================================================
+            //  DERIVED DATA
+            // ============================================================
             const getLatestComm = (refId) => {
                 const thread = communications.filter(c => String(c.refId) === String(refId)).sort((a,b) => new Date(b.date) - new Date(a.date));
                 return thread.length > 0 ? thread[0] : null;
             };
 
+            // Has a Supplier already replied to this Manager request (in pending or in real ticket)?
+            // Used to lock Manager edits.
+            const isManagerRequestLocked = (pendingItem) => {
+                if (!pendingItem) return true;
+                // Standard recall_initiate / ticket_create are locked once any supplier_reply / recall_complete pending exists for same ref
+                if (pendingItem.type === 'recall_initiate') {
+                    return pending.some(p => p.type === 'recall_complete' && p.payload && String(p.payload.orderId) === String(pendingItem.payload.orderId));
+                }
+                // For ticket_create, lock if there's already a synced ticket OR a pending reply referencing it
+                // Since ticket_create is itself pending (no ticketId yet), only lock if another pending references same orderId+category
+                if (pendingItem.type === 'ticket_create') {
+                    return false; // No replies possible until ticket is synced and has a ticketId
+                }
+                return false;
+            };
+
+            // Standard records
             const allPendingRecalls = dbRecords.filter(r => r.trackingNumber === "PENDING RECALL");
             const filteredPendingRecalls = allPendingRecalls.filter(r => String(r.orderId).toLowerCase().includes(searchQuery.toLowerCase()));
-            
             const allCompletedRecalls = dbRecords.filter(r => (r.submittedBy || "").includes("Completed by:"));
             const filteredCompletedRecalls = allCompletedRecalls.filter(r => String(r.orderId).toLowerCase().includes(searchQuery.toLowerCase()) || String(r.trackingNumber).toLowerCase().includes(searchQuery.toLowerCase()));
             const recallHistoryTotalPages = Math.ceil(filteredCompletedRecalls.length / ITEMS_PER_PAGE);
@@ -254,16 +379,111 @@
             const standardTotalPages = Math.ceil(filteredStandardRecords.length / ITEMS_PER_PAGE);
             const paginatedStandard = filteredStandardRecords.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
+            // Pending items split by type
+            const pendingStandard = pending.filter(p => p.type === 'standard');
+            const pendingRecallInits = pending.filter(p => p.type === 'recall_initiate');
+            const pendingRecallCompletes = pending.filter(p => p.type === 'recall_complete');
+            const pendingTicketCreates = pending.filter(p => p.type === 'ticket_create');
+            const pendingTicketReplies = pending.filter(p => p.type === 'ticket_reply');
+
+            // For Recalls tab, render pending_recall_initiates as if they were sheet rows
+            // (so Supplier can complete them even before Manager syncs)
+            const virtualPendingRecalls = pendingRecallInits.map(p => ({
+                _pendingId: p.id,
+                _isVirtual: true,
+                _editedBadge: p.editedBadge,
+                _edits: p.edits || [],
+                orderId: p.payload.orderId,
+                status: p.payload.status,
+                trackingNumber: "PENDING RECALL",
+                courier: "ACTION REQUIRED",
+                refundAmount: "0.00",
+                submittedBy: p.createdBy + " (Awaiting Approval)",
+                timestamp: p.createdAt,
+                _managerComment: p.payload.comment,
+                _managerLinks: p.payload.links,
+                _managerFiles: p.payload.ticketFiles || []
+            }));
+            const combinedPendingRecalls = [...virtualPendingRecalls, ...filteredPendingRecalls.filter(r => String(r.orderId).toLowerCase().includes(searchQuery.toLowerCase()))];
+
             const isTicketTab = HELPDESK_CATEGORIES.includes(activeTab);
-            const activeCategoryTickets = tickets.filter(t => t.category === activeTab && t.status !== "Closed" && t.status !== "Approved");
+
+            // Virtual pending tickets — Manager's ticket_create that hasn't been synced yet.
+            // Shown to Supplier as a "Pre-Sync Request" so they can reply before Manager syncs.
+            // Uses pending ID as a virtual ticketId for the chat thread.
+            const virtualPendingTickets = pendingTicketCreates
+                .filter(p => p.payload.category === activeTab)
+                .map(p => ({
+                    _isVirtual: true,
+                    _pendingId: p.id,
+                    _editedBadge: p.editedBadge,
+                    _edits: p.edits || [],
+                    ticketId: "PENDING-" + p.id.slice(-6).toUpperCase(),
+                    date: p.createdAt,
+                    orderId: p.payload.orderId,
+                    category: p.payload.category,
+                    status: p.payload.status,
+                    createdBy: p.createdBy,
+                    _managerComment: p.payload.comment,
+                    _managerLinks: p.payload.links,
+                    _managerFiles: p.payload.ticketFiles || []
+                }));
+
+            const realActiveTickets = tickets.filter(t => t.category === activeTab && t.status !== "Closed");
+            // For Suppliers, merge virtual pending tickets in. For Managers, they already see these in the "Pending New Tickets" section above, so don't duplicate.
+            const activeCategoryTickets = userRole === "MANAGER" ? realActiveTickets : [...virtualPendingTickets, ...realActiveTickets];
             const filteredActiveTickets = activeCategoryTickets.filter(t => String(t.orderId).toLowerCase().includes(searchQuery.toLowerCase()) || String(t.ticketId).toLowerCase().includes(searchQuery.toLowerCase()));
-            const historyCategoryTickets = tickets.filter(t => t.category === activeTab && (t.status === "Closed" || t.status === "Approved"));
+            const historyCategoryTickets = tickets.filter(t => t.category === activeTab && t.status === "Closed");
             const filteredHistoryTickets = historyCategoryTickets.filter(t => String(t.orderId).toLowerCase().includes(searchQuery.toLowerCase()) || String(t.ticketId).toLowerCase().includes(searchQuery.toLowerCase()));
             const ticketHistoryTotalPages = Math.ceil(filteredHistoryTickets.length / ITEMS_PER_PAGE);
             const paginatedTicketHistory = filteredHistoryTickets.slice((currentPage - 1) * ITEMS_PER_PAGE, currentPage * ITEMS_PER_PAGE);
 
-            const activeThread = activeTicket ? communications.filter(c => String(c.refId) === String(activeTicket.ticketId)).sort((a,b) => new Date(a.date) - new Date(b.date)) : [];
+            // Active thread for an open ticket (also injects pending ticket_replies as "Awaiting Manager Sync" bubbles)
+            // For virtual (pending) tickets, synthesize the Manager's original request as the first bubble.
+            const activeThread = activeTicket ? (() => {
+                const isVirtual = activeTicket._isVirtual;
+                const threadKey = isVirtual ? activeTicket._pendingId : activeTicket.ticketId;
+                const messages = [];
 
+                // For virtual tickets, inject Manager's original request as first bubble
+                if (isVirtual) {
+                    messages.push({
+                        date: activeTicket.date,
+                        refId: threadKey,
+                        author: activeTicket.createdBy,
+                        role: "MANAGER",
+                        comment: activeTicket._managerComment || "",
+                        links: activeTicket._managerLinks || "",
+                        files: activeTicket._managerFiles || [],
+                        _pending: true,
+                        _pendingId: activeTicket._pendingId,
+                        _isManagerRequest: true
+                    });
+                }
+
+                // Real communications (only for synced tickets)
+                if (!isVirtual) {
+                    communications.filter(c => String(c.refId) === String(activeTicket.ticketId)).forEach(c => messages.push({ ...c, _pending: false }));
+                }
+
+                // Pending replies (matched by either real ticketId or virtual pendingId)
+                pendingTicketReplies
+                    .filter(p => String(p.payload.ticketId) === String(threadKey))
+                    .forEach(p => messages.push({
+                        date: p.createdAt, refId: threadKey, author: p.createdBy, role: p.createdByRole,
+                        comment: p.payload.comment, links: p.payload.links, files: p.payload.ticketFiles || [],
+                        _pending: true, _pendingId: p.id, _pendingStatus: p.payload.status
+                    }));
+
+                return messages.sort((a,b) => new Date(a.date) - new Date(b.date));
+            })() : [];
+
+            // Pending tickets for this category (shown above active tickets in the list)
+            const pendingTicketsThisCategory = pendingTicketCreates.filter(p => p.payload.category === activeTab);
+
+            // ============================================================
+            //  RENDER HELPERS
+            // ============================================================
             const renderPagination = (totalPages) => {
                 if (totalPages <= 1) return null;
                 return (
@@ -275,19 +495,110 @@
                 );
             };
 
+            // Single pending card row used in every tab's "Pending Sync" section
+            const PendingCard = ({ item, accentColor }) => {
+                const p = item.payload || {};
+                const isMine = item.createdBy === userEmail;
+                const isMgr = userRole === "MANAGER";
+                const locked = isManagerRequestLocked(item);
+                const canEdit = isMgr && !locked && (item.type === 'recall_initiate' || item.type === 'ticket_create');
+
+                return (
+                    <div className={`bg-[#0b0e14] border border-${accentColor}-500/30 rounded-2xl p-5 mb-3 animate-fade-in`}>
+                        <div className="flex justify-between items-start mb-3">
+                            <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Approval</span>
+                                    {item.editedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
+                                </div>
+                                <p className="text-white font-black text-sm mt-2">
+                                    {p.orderId || p.ticketId || "—"}
+                                    {p.category && <span className="text-[10px] text-slate-500 ml-2 font-bold">{p.category}</span>}
+                                </p>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mt-1">
+                                    From: {item.createdBy} ({item.createdByRole}) • {new Date(item.createdAt).toLocaleString()}
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* Payload details */}
+                        <div className="text-xs text-slate-300 space-y-1 mb-3">
+                            {p.trackingNumber && p.trackingNumber !== "No Tracking" && <p><span className="text-slate-500 font-bold">Tracking:</span> {p.trackingNumber}</p>}
+                            {p.courier && p.courier !== "N/A" && <p><span className="text-slate-500 font-bold">Courier:</span> {p.courier}</p>}
+                            {p.productCost && <p><span className="text-slate-500 font-bold">Cost:</span> ${p.productCost} • <span className="text-slate-500 font-bold">Fee:</span> ${p.returnFee} • <span className="text-slate-500 font-bold">Refund:</span> ${p.refundAmount}</p>}
+                            {p.status && <p><span className="text-slate-500 font-bold">Status:</span> {p.status}</p>}
+                            {p.comment && <p className="italic text-slate-400">"{p.comment}"</p>}
+                            {p.links && <a href={p.links} target="_blank" className="text-blue-400 underline break-all block">{p.links}</a>}
+                            {p.ticketFiles && p.ticketFiles.length > 0 && (
+                                <div className="flex gap-2 flex-wrap mt-2">
+                                    {p.ticketFiles.map((url, i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">📎 File {i+1}</a>)}
+                                </div>
+                            )}
+                            {p.images && p.images.length > 0 && (
+                                <div className="flex gap-2 flex-wrap mt-2">
+                                    {p.images.map((url, i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">🏷️ Label {i+1}</a>)}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Edit history */}
+                        {item.edits && item.edits.length > 0 && (
+                            <div className="mt-3 p-2 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
+                                <p className="text-[9px] font-black text-yellow-400 uppercase tracking-widest mb-1">Edit History</p>
+                                {item.edits.map((ed, i) => (
+                                    <p key={i} className="text-[10px] text-slate-400 italic">[{new Date(ed.editedAt).toLocaleString()}] {ed.editedBy}: {ed.changes.join("; ")}</p>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* Manager actions */}
+                        {isMgr && (
+                            <div className="flex gap-2 mt-4 pt-3 border-t border-slate-800">
+                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className={`flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all`}>✓ Approve</button>
+                                {canEdit && (
+                                    <button onClick={() => {
+                                        setEditingPending(item);
+                                        setEditForm({ orderId: p.orderId || '', status: p.status || '', comment: p.comment || '', links: p.links || '' });
+                                        setEditFiles([]); setEditBase64([]);
+                                    }} className="flex-1 bg-yellow-500/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-500/30 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✏️ Edit Request</button>
+                                )}
+                                <button onClick={() => discardPending(item.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-4 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✕</button>
+                            </div>
+                        )}
+
+                        {!isMgr && (
+                            <div className="mt-3 pt-3 border-t border-slate-800">
+                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager approval...</p>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            // ============================================================
+            //  RENDER
+            // ============================================================
             return (
                 <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
+                    {/* TABS */}
                     <div className="w-full max-w-5xl flex justify-between items-center border-b border-slate-800 pb-2">
                         <div className="flex gap-4 overflow-x-auto custom-scrollbar pb-2 min-w-0">
-                            <button onClick={() => switchTab('scanner')} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>Standard Scan</button>
+                            <button onClick={() => switchTab('scanner')} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'scanner' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-slate-600 hover:text-slate-400'}`}>
+                                Standard Scan
+                                {pendingStandard.length > 0 && userRole === "MANAGER" && <span className="bg-blue-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingStandard.length}</span>}
+                            </button>
                             <button onClick={() => switchTab('recalls')} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
-                                Recalls {(allPendingRecalls.length > 0 && userRole !== "MANAGER") && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{allPendingRecalls.length}</span>}
+                                Recalls
+                                {(allPendingRecalls.length + virtualPendingRecalls.length) > 0 && userRole !== "MANAGER" && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{allPendingRecalls.length + virtualPendingRecalls.length}</span>}
+                                {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length) > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecallInits.length + pendingRecallCompletes.length}</span>}
                             </button>
                             {HELPDESK_TABS.map(tab => {
-                                const count = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole !== "MANAGER" && t.status === "Waiting on Supplier"))).length;
+                                const activeCount = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole !== "MANAGER" && t.status === "Waiting on Supplier"))).length;
+                                const pendingCount = userRole === "MANAGER" ? pending.filter(p => (p.type === 'ticket_create' && p.payload.category === tab.id) || (p.type === 'ticket_reply' && p.payload.category === tab.id)).length : 0;
+                                const total = activeCount + pendingCount;
                                 return (
                                     <button key={tab.id} onClick={() => switchTab(tab.id)} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === tab.id ? 'text-purple-500 border-b-2 border-purple-500' : 'text-slate-600 hover:text-slate-400'}`}>
-                                        {tab.label} {count > 0 && <span className="bg-purple-500 text-white text-[10px] px-2 py-0.5 rounded-full">{count}</span>}
+                                        {tab.label} {total > 0 && <span className="bg-purple-500 text-white text-[10px] px-2 py-0.5 rounded-full">{total}</span>}
                                     </button>
                                 );
                             })}
@@ -297,123 +608,138 @@
                         </div>
                     </div>
 
-                    {/* ========================================== */}
-                    {/* TICKETING / HELPDESK VIEWS                 */}
-                    {/* ========================================== */}
-                    {isTicketTab && (
-                        <div className="w-full max-w-2xl space-y-8">
-                            {!showCreateTicket && !activeTicket && (
-                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
-                                    <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
-                                        <h1 className="text-xl font-black text-white tracking-widest italic uppercase">{HELPDESK_TABS.find(t => t.id === activeTab).label}</h1>
-                                        <div className="flex gap-2 items-center">
-                                            <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search ID..." className="bg-[#0b0e14] border border-slate-700 rounded-lg px-3 py-1.5 text-white text-[10px] font-bold uppercase tracking-widest outline-none focus:border-purple-500 w-32 md:w-48 transition-all placeholder:text-slate-600" />
-                                            <button onClick={loadDatabase} className="text-[9px] font-bold text-purple-500 border border-purple-500/20 px-3 py-1.5 rounded-lg uppercase hover:bg-purple-500/10">Refresh</button>
-                                            {userRole === "MANAGER" && <button onClick={() => setShowCreateTicket(true)} className="text-[9px] font-bold bg-purple-600 text-white px-3 py-1.5 rounded-lg uppercase hover:bg-purple-500">+ Ticket</button>}
-                                        </div>
-                                    </div>
-                                    <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2 mt-2">Active Tickets</h2>
-                                    <div className="space-y-4 mb-8">
-                                        {filteredActiveTickets.length === 0 && <p className="text-slate-500 text-xs italic text-center py-4">No active tickets.</p>}
-                                        {filteredActiveTickets.map((t, i) => (
-                                            <div key={i} className="bg-[#0b0e14] border border-slate-700 hover:border-purple-500/50 rounded-2xl p-5 transition-all flex flex-col group">
-                                                <div onClick={() => { setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : ""); }} className="flex justify-between items-center cursor-pointer">
-                                                    <div><div className="flex items-center gap-3 mb-1"><span className="text-white font-black text-sm">{t.orderId}</span><span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span></div></div>
-                                                    <div className="text-right"><span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${t.status === 'Waiting on Supplier' ? 'bg-orange-500/20 text-orange-400' : 'bg-purple-500/20 text-purple-400'}`}>{t.status}</span></div>
-                                                </div>
-                                                {userRole === "MANAGER" && t.status === "Pending Approval" && (
-                                                    <div className="mt-3 pt-3 border-t border-slate-800">
-                                                        <button onClick={() => handleApproveRecord(t.ticketId, 'ticket')} className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] px-4 py-2 rounded-lg font-black uppercase tracking-widest transition-all">Approve & Sync</button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2 mt-8 border-t border-slate-800 pt-6">Ticket History (Closed)</h2>
-                                    <div className="space-y-4">
-                                        {paginatedTicketHistory.length === 0 && <p className="text-slate-600 text-xs italic text-center py-4">No history available.</p>}
-                                        {paginatedTicketHistory.map((t, i) => (
-                                            <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : ""); }} className="bg-[#0b0e14] border border-slate-800 hover:border-slate-600 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center opacity-70 hover:opacity-100">
-                                                <div><div className="flex items-center gap-3 mb-1"><span className="text-slate-300 font-black text-sm">{t.orderId}</span><span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span></div></div>
-                                                <div className="text-right"><span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-800 text-slate-400">{t.status}</span></div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    {renderPagination(ticketHistoryTotalPages)}
+                    {/* ========================================================== */}
+                    {/* EDIT MANAGER REQUEST MODAL                                 */}
+                    {/* ========================================================== */}
+                    {editingPending && (
+                        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6 animate-fade-in">
+                            <div className="bg-[#161b22] border border-yellow-500/30 rounded-[2rem] p-8 max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar">
+                                <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-800">
+                                    <h2 className="text-sm font-black text-yellow-500 tracking-widest uppercase">✏️ Edit Sent Request</h2>
+                                    <button onClick={() => { setEditingPending(null); setEditFiles([]); setEditBase64([]); }} className="text-slate-500 hover:text-white text-xl">✕</button>
                                 </div>
-                            )}
-                            {showCreateTicket && userRole === "MANAGER" && (
-                                <div className="bg-[#161b22] border border-purple-500/30 rounded-[2rem] p-8 shadow-2xl animate-fade-in">
-                                    <h2 className="text-sm font-black text-purple-500 tracking-widest uppercase mb-6 flex justify-between items-center">Open New Ticket <button onClick={() => {setShowCreateTicket(false); resetHelpdeskForm();}} className="text-slate-500 hover:text-white">✕</button></h2>
-                                    <div className="space-y-4">
-                                        <input value={hdOrderId} onChange={(e) => setHdOrderId(e.target.value)} placeholder="ORDER ID *" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold uppercase"/>
-                                        <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm"><option value="" disabled>Initial Status *</option><option value="Open">Open</option><option value="Waiting on Supplier">Waiting on Supplier</option><option value="Closed">Closed</option></select>
-                                        <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Enter details..." rows="3" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
-                                        <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Related Links/URLs (Optional)" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm"/>
-                                        <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]/50">
-                                            <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
-                                            {hdFiles.length > 0 ? <p className="text-purple-400 font-bold text-xs uppercase">{hdFiles.length} File(s) Attached</p> : <p className="text-slate-500 text-xs font-bold uppercase">Attach Files (PDF, JPG, PNG)</p>}
-                                        </div>
-                                        <button onClick={submitNewTicket} disabled={!hdOrderId || !hdStatus || status.includes('sync')} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing_ticket' ? 'Creating...' : 'Create Ticket'}</button>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-4">A new comment will be appended to the thread describing your changes. The Supplier will see an "Edited" badge.</p>
+                                <div className="space-y-4">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] text-slate-500 font-bold uppercase">Order ID</label>
+                                        <input value={editForm.orderId} onChange={(e) => setEditForm({...editForm, orderId: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-yellow-500 font-bold uppercase"/>
                                     </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] text-slate-500 font-bold uppercase">Status</label>
+                                        <select value={editForm.status} onChange={(e) => setEditForm({...editForm, status: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-yellow-500 font-bold text-sm">
+                                            <option value="">— No Change —</option>
+                                            <option value="Open">Open</option>
+                                            <option value="Waiting on Supplier">Waiting on Supplier</option>
+                                            <option value="Closed">Closed</option>
+                                        </select>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] text-slate-500 font-bold uppercase">Comment</label>
+                                        <textarea value={editForm.comment} onChange={(e) => setEditForm({...editForm, comment: e.target.value})} rows="3" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-yellow-500 font-bold text-sm custom-scrollbar"></textarea>
+                                    </div>
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] text-slate-500 font-bold uppercase">Link</label>
+                                        <input value={editForm.links} onChange={(e) => setEditForm({...editForm, links: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-yellow-500 font-bold text-sm"/>
+                                    </div>
+                                    <div onClick={() => editFileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-xl p-4 flex items-center justify-center cursor-pointer hover:border-yellow-500 bg-[#0b0e14]/50">
+                                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={editFileInputRef} onChange={(e) => processFiles(e, setEditFiles, setEditBase64)} className="hidden" />
+                                        <span className="text-slate-400 text-xs font-bold uppercase">{editFiles.length > 0 ? `${editFiles.length} New File(s)` : '📎 Attach Additional Files'}</span>
+                                    </div>
+                                    <button onClick={submitEdit} disabled={status === 'syncing'} className="w-full bg-yellow-500 hover:bg-yellow-600 text-black py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-50 transition-all">
+                                        {status === 'syncing' ? 'Saving...' : 'Save Edit'}
+                                    </button>
                                 </div>
-                            )}
-                            {activeTicket && (
-                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] shadow-2xl flex flex-col h-[80vh] animate-fade-in">
-                                    <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-[#0b0e14] rounded-t-[2rem]">
-                                        <div><h2 className="text-white font-black text-xl">{activeTicket.orderId}</h2><p className="text-slate-400 text-xs font-bold">{activeTicket.category} • <span className="text-purple-400">{activeTicket.status}</span></p></div>
-                                        <button onClick={() => {setActiveTicket(null); resetHelpdeskForm();}} className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:bg-slate-700">Back</button>
-                                    </div>
-                                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-[#0b0e14]/30">
-                                        {activeThread.map((msg, i) => {
-                                            const isMe = msg.role === userRole;
-                                            return (
-                                                <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
-                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
-                                                        {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
-                                                        {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
-                                                        {msg.files && msg.files.length > 0 && <div className="mt-3 flex gap-2 flex-wrap">{msg.files.map((url, idx) => <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>)}</div>}
-                                                    </div>
-                                                </div>
-                                            )
-                                        })}
-                                    </div>
-                                    {activeTicket.status !== 'Closed' && activeTicket.status !== 'Approved' && (
-                                        <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
-                                            <div className="space-y-3">
-                                                <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
-                                                <div className="flex gap-3">
-                                                    <div className="flex-1">
-                                                        {userRole === "MANAGER" ? (
-                                                            <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"><option value="" disabled>Update Status *</option><option value="Open">Open</option><option value="Waiting on Supplier">Waiting on Supplier</option><option value="Closed">Closed</option></select>
-                                                        ) : (
-                                                            <select value={hdStatus} disabled className="w-full bg-[#0b0e14] border border-purple-500/50 rounded-xl p-3 text-purple-400 font-black text-xs opacity-80"><option value="Waiting on Agent">Status: Waiting on Agent</option></select>
-                                                        )}
-                                                    </div>
-                                                    <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
-                                                    <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="flex-1 border border-slate-700 rounded-xl p-3 flex items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]">
-                                                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
-                                                        <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
-                                                    </div>
-                                                </div>
-                                                <button onClick={submitTicketReply} disabled={!hdStatus && userRole === "MANAGER" || status.includes('sync')} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing_ticket' ? 'Sending...' : 'Send Reply'}</button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            )}
+                            </div>
                         </div>
                     )}
 
-                    {/* ========================================== */}
-                    {/* STANDARD SCAN TAB                          */}
-                    {/* ========================================== */}
+                    {/* ========================================================== */}
+                    {/* SYNC MODAL (Manager review before commit)                  */}
+                    {/* ========================================================== */}
+                    {syncingItem && (
+                        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6 animate-fade-in">
+                            <div className="bg-[#161b22] border border-emerald-500/30 rounded-[2rem] p-8 max-w-lg w-full max-h-[90vh] overflow-y-auto custom-scrollbar">
+                                <div className="flex justify-between items-center mb-6 pb-4 border-b border-slate-800">
+                                    <h2 className="text-sm font-black text-emerald-500 tracking-widest uppercase">✓ Approve & Save to Sheet</h2>
+                                    <button onClick={() => { setSyncingItem(null); setSyncOverrides({}); }} className="text-slate-500 hover:text-white text-xl">✕</button>
+                                </div>
+                                <p className="text-[10px] text-slate-500 font-bold uppercase mb-4">You can edit any field before committing to the sheet. Leave blank to keep original value.</p>
+
+                                {(() => {
+                                    const p = syncingItem.payload || {};
+                                    return (
+                                        <div className="space-y-3 text-xs">
+                                            {p.orderId !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Order ID</label>
+                                                    <input defaultValue={p.orderId} onChange={(e) => setSyncOverrides({...syncOverrides, orderId: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold uppercase mt-1"/></div>
+                                            )}
+                                            {p.trackingNumber !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Tracking</label>
+                                                    <input defaultValue={p.trackingNumber} onChange={(e) => setSyncOverrides({...syncOverrides, trackingNumber: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold mt-1"/></div>
+                                            )}
+                                            {p.courier !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Courier</label>
+                                                    <select defaultValue={p.courier} onChange={(e) => setSyncOverrides({...syncOverrides, courier: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold mt-1">
+                                                        <option value="FedEx Ground">FedEx Ground</option>
+                                                        <option value="Amazon">Amazon</option>
+                                                        <option value="UPS">UPS</option>
+                                                        <option value="USPS">USPS</option>
+                                                        <option value="N/A">N/A</option>
+                                                    </select></div>
+                                            )}
+                                            {p.productCost !== undefined && (
+                                                <div className="grid grid-cols-3 gap-2">
+                                                    <div><label className="text-[10px] text-slate-500 font-bold uppercase">Cost</label>
+                                                        <input defaultValue={p.productCost} type="number" onChange={(e) => {
+                                                            const cost = parseFloat(e.target.value) || 0;
+                                                            const fee = parseFloat(syncOverrides.returnFee !== undefined ? syncOverrides.returnFee : p.returnFee) || 0;
+                                                            setSyncOverrides({...syncOverrides, productCost: e.target.value, refundAmount: (cost - fee).toFixed(2)});
+                                                        }} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-2 text-white outline-none focus:border-emerald-500 font-bold mt-1"/></div>
+                                                    <div><label className="text-[10px] text-slate-500 font-bold uppercase">Fee</label>
+                                                        <input defaultValue={p.returnFee} type="number" onChange={(e) => {
+                                                            const fee = parseFloat(e.target.value) || 0;
+                                                            const cost = parseFloat(syncOverrides.productCost !== undefined ? syncOverrides.productCost : p.productCost) || 0;
+                                                            setSyncOverrides({...syncOverrides, returnFee: e.target.value, refundAmount: (cost - fee).toFixed(2)});
+                                                        }} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-2 text-white outline-none focus:border-emerald-500 font-bold mt-1"/></div>
+                                                    <div><label className="text-[10px] text-slate-500 font-bold uppercase">Refund</label>
+                                                        <input value={syncOverrides.refundAmount !== undefined ? syncOverrides.refundAmount : p.refundAmount} readOnly className="w-full bg-[#0b0e14] border border-emerald-500/30 rounded-xl p-2 text-emerald-400 font-bold mt-1"/></div>
+                                                </div>
+                                            )}
+                                            {p.status !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Status</label>
+                                                    <select defaultValue={p.status} onChange={(e) => setSyncOverrides({...syncOverrides, status: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold mt-1">
+                                                        <option value="Open">Open</option>
+                                                        <option value="Closed">Closed</option>
+                                                        <option value="Waiting on Supplier">Waiting on Supplier</option>
+                                                        <option value="Waiting on Agent">Waiting on Agent</option>
+                                                    </select></div>
+                                            )}
+                                            {p.comment !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Comment</label>
+                                                    <textarea defaultValue={p.comment} rows="2" onChange={(e) => setSyncOverrides({...syncOverrides, comment: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold custom-scrollbar mt-1"></textarea></div>
+                                            )}
+                                            {p.links !== undefined && (
+                                                <div><label className="text-[10px] text-slate-500 font-bold uppercase">Link</label>
+                                                    <input defaultValue={p.links} onChange={(e) => setSyncOverrides({...syncOverrides, links: e.target.value})} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-emerald-500 font-bold mt-1"/></div>
+                                            )}
+                                            <button onClick={() => syncPending(syncingItem.id, syncOverrides)} disabled={status === 'syncing'} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-50 transition-all mt-4">
+                                                {status === 'syncing' ? 'Approving...' : '✓ Approve & Save'}
+                                            </button>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ========================================================== */}
+                    {/* STANDARD SCAN TAB                                          */}
+                    {/* ========================================================== */}
                     {activeTab === 'scanner' && (
                         <div className="w-full max-w-xl space-y-8 animate-fade-in">
                             <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
                                 <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
-                                    <div><h1 className="text-xl font-black text-white tracking-widest italic uppercase">Standard Return</h1></div>
+                                    <h1 className="text-xl font-black text-white tracking-widest italic uppercase">Standard Return</h1>
                                     <button onClick={loadDatabase} className="text-[9px] font-bold text-blue-500 border border-blue-500/20 px-3 py-1 rounded-full uppercase hover:bg-blue-500/10">Refresh</button>
                                 </div>
                                 <div className="space-y-6">
@@ -449,11 +775,27 @@
                                             <span className="text-slate-400 text-xs font-bold uppercase">{stdExtraFiles.length > 0 ? `${stdExtraFiles.length} Extra File(s)` : '📎 Attach Extra Photos / PDFs'}</span>
                                         </div>
                                     </div>
-                                    <button onClick={handleSync} disabled={!orderId || !courier || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && courier && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
-                                        {status === 'syncing' ? 'SAVING...' : status === 'success' ? '✓ SAVED' : 'SUBMIT RECORD'}
+                                    <button onClick={handleStandardSubmit} disabled={!orderId || !courier || status === 'scanning' || status === 'syncing'} className={`w-full py-5 rounded-2xl font-black text-lg tracking-widest transition-all ${orderId && courier && status !== 'scanning' && status !== 'syncing' ? 'bg-blue-600 text-white shadow-xl hover:bg-blue-500' : 'bg-slate-800 text-slate-600'}`}>
+                                        {status === 'syncing' ? 'SENDING...' : (userRole === "MANAGER" ? 'SEND REQUEST' : 'SEND SUBMISSION')}
                                     </button>
                                 </div>
                             </div>
+
+                            {/* PENDING SUBMISSIONS — visible to Manager only */}
+                            {userRole === "MANAGER" && pendingStandard.length > 0 && (
+                                <div>
+                                    <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingStandard.length})</h2>
+                                    {pendingStandard.map(item => <PendingCard key={item.id} item={item} accentColor="blue" />)}
+                                </div>
+                            )}
+                            {userRole !== "MANAGER" && pendingStandard.filter(p => p.createdBy === userEmail).length > 0 && (
+                                <div>
+                                    <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">⏳ My Pending Submissions ({pendingStandard.filter(p => p.createdBy === userEmail).length})</h2>
+                                    {pendingStandard.filter(p => p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="blue" />)}
+                                </div>
+                            )}
+
+                            {/* STANDARD HISTORY */}
                             <div>
                                 <div className="flex justify-between items-center mb-4 ml-2">
                                     <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase">Standard Return History</h2>
@@ -474,11 +816,6 @@
                                                     {latestComm.links && <a href={latestComm.links} target="_blank" className="text-[10px] text-blue-500 font-bold underline mt-1 block break-all">{latestComm.links}</a>}
                                                 </div>
                                             )}
-                                            {userRole === "MANAGER" && rec.status === "Pending Approval" && (
-                                                <div className="mt-3 pt-3 border-t border-slate-800">
-                                                    <button onClick={() => handleApproveRecord(rec.orderId, 'standard')} className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] px-4 py-2 rounded-lg font-black uppercase tracking-widest transition-all">Approve & Sync</button>
-                                                </div>
-                                            )}
                                         </div>
                                     )})}
                                     {filteredStandardRecords.length === 0 && <p className="text-slate-600 text-xs text-center font-bold italic mt-8">{searchQuery ? "No matches found." : "No history available."}</p>}
@@ -488,9 +825,9 @@
                         </div>
                     )}
 
-                    {/* ========================================== */}
-                    {/* RECALLS TAB                                */}
-                    {/* ========================================== */}
+                    {/* ========================================================== */}
+                    {/* RECALLS TAB                                                */}
+                    {/* ========================================================== */}
                     {activeTab === 'recalls' && (
                         <div className="w-full max-w-xl space-y-8 animate-fade-in">
                             {userRole === "MANAGER" && (
@@ -507,10 +844,27 @@
                                             <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={recallFileInputRef} onChange={(e) => processFiles(e, setRecallFiles, setRecallBase64)} className="hidden" />
                                             <span className="text-slate-400 text-xs font-bold uppercase">{recallFiles.length > 0 ? `${recallFiles.length} Extra File(s)` : '📎 Attach Photos / PDFs'}</span>
                                         </div>
-                                        <button onClick={initiateRecall} disabled={!recallOrderId || status === 'syncing_recall'} className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-sm disabled:opacity-50 transition-all">
-                                            {status === 'syncing_recall' ? 'Sending Request...' : 'Submit Recall Request'}
+                                        <button onClick={initiateRecall} disabled={!recallOrderId || status === 'syncing'} className="w-full bg-orange-500 hover:bg-orange-600 text-white py-4 rounded-xl font-black uppercase tracking-widest text-sm disabled:opacity-50 transition-all">
+                                            {status === 'syncing' ? 'Sending...' : 'Send Request to Supplier'}
                                         </button>
                                     </div>
+                                </div>
+                            )}
+
+                            {/* PENDING SYNC — Manager only */}
+                            {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length) > 0 && (
+                                <div>
+                                    <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingRecallInits.length + pendingRecallCompletes.length})</h2>
+                                    {pendingRecallInits.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
+                                    {pendingRecallCompletes.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
+                                </div>
+                            )}
+
+                            {/* Supplier's own pending submissions */}
+                            {userRole !== "MANAGER" && pending.filter(p => (p.type === 'recall_complete') && p.createdBy === userEmail).length > 0 && (
+                                <div>
+                                    <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">⏳ My Pending Submissions</h2>
+                                    {pending.filter(p => p.type === 'recall_complete' && p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
                                 </div>
                             )}
 
@@ -521,14 +875,21 @@
                                 </div>
 
                                 <div className="space-y-4 mb-8">
-                                    {filteredPendingRecalls.map((rec, i) => {
-                                        const managerComm = getLatestComm(rec.orderId);
+                                    {combinedPendingRecalls.map((rec, i) => {
+                                        const managerComm = rec._isVirtual
+                                            ? { comment: rec._managerComment, links: rec._managerLinks, files: rec._managerFiles }
+                                            : getLatestComm(rec.orderId);
+                                        const showEditedBadge = rec._isVirtual && rec._editedBadge && userRole !== "MANAGER";
                                         return (
-                                        <div key={i} className="bg-[#161b22] border border-slate-700 rounded-2xl p-6 transition-all">
+                                        <div key={rec._pendingId || i} className={`bg-[#161b22] border ${showEditedBadge ? 'border-yellow-500/50' : 'border-slate-700'} rounded-2xl p-6 transition-all`}
+                                             onClick={() => { if (showEditedBadge) clearEditedBadge(rec._pendingId); }}>
                                             <div className="flex justify-between items-center mb-4">
                                                 <div>
-                                                    <p className="text-white font-black text-lg">{rec.orderId}</p>
-                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest mt-1">Pending Supplier Action</p>
+                                                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                                                        <p className="text-white font-black text-lg">{rec.orderId}</p>
+                                                        {showEditedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
+                                                    </div>
+                                                    <p className="text-[10px] text-orange-400 font-bold uppercase tracking-widest">Pending Supplier Action</p>
                                                 </div>
                                                 {resolvingId !== rec.orderId && (
                                                     <button onClick={() => { setResolvingId(rec.orderId); setCourier(''); resetRecallForm(); }} className="border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all">Complete Form</button>
@@ -569,18 +930,18 @@
                                                     </div>
                                                     <div className="flex gap-2 pt-2">
                                                         <button onClick={() => { setResolvingId(null); setCourier(''); }} className="flex-1 bg-slate-800 text-slate-400 py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-slate-700">Cancel</button>
-                                                        <button onClick={() => completeRecall(rec.orderId)} disabled={!trackingNumber || !courier || !productCost || !returnFee || status === 'syncing_recall_complete'} className="flex-[2] bg-orange-500 text-white py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-orange-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all">
-                                                            {status === 'syncing_recall_complete' ? 'Saving...' : 'Submit Resolution'}
+                                                        <button onClick={() => completeRecall(rec.orderId)} disabled={!trackingNumber || !courier || !productCost || !returnFee || status === 'syncing'} className="flex-[2] bg-orange-500 text-white py-4 rounded-xl font-black text-xs tracking-widest uppercase hover:bg-orange-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all">
+                                                            {status === 'syncing' ? 'Sending...' : (userRole === "MANAGER" ? 'Send Resolution' : 'Send Reply to Manager')}
                                                         </button>
                                                     </div>
                                                 </div>
                                             )}
                                         </div>
                                     )})}
-                                    {filteredPendingRecalls.length === 0 && <p className="text-slate-600 text-xs text-center font-bold italic mt-8">{searchQuery ? "No matches found for that ID." : "No pending recalls at this time."}</p>}
+                                    {combinedPendingRecalls.length === 0 && <p className="text-slate-600 text-xs text-center font-bold italic mt-8">{searchQuery ? "No matches found for that ID." : "No pending recalls at this time."}</p>}
                                 </div>
-                                
-                                {/* RECALL HISTORY (COMPLETED) */}
+
+                                {/* RECALL HISTORY */}
                                 <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2 mt-8 border-t border-slate-800 pt-6">Completed Recall History</h2>
                                 <div className="space-y-3">
                                     {paginatedRecallHistory.map((rec, i) => {
@@ -597,17 +958,142 @@
                                                     {latestComm.links && <a href={latestComm.links} target="_blank" className="text-[10px] text-blue-500 font-bold underline mt-1 block break-all">{latestComm.links}</a>}
                                                 </div>
                                             )}
-                                            {userRole === "MANAGER" && rec.status === "Pending Approval" && (
-                                                <div className="mt-3 pt-3 border-t border-slate-800">
-                                                    <button onClick={() => handleApproveRecord(rec.orderId, 'recall')} className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] px-4 py-2 rounded-lg font-black uppercase tracking-widest transition-all">Approve & Sync</button>
-                                                </div>
-                                            )}
                                         </div>
                                     )})}
                                     {filteredCompletedRecalls.length === 0 && <p className="text-slate-600 text-xs text-center font-bold italic mt-8">{searchQuery ? "No matches found." : "No history available."}</p>}
                                 </div>
                                 {renderPagination(recallHistoryTotalPages)}
                             </div>
+                        </div>
+                    )}
+
+                    {/* ========================================================== */}
+                    {/* HELPDESK TAB                                               */}
+                    {/* ========================================================== */}
+                    {isTicketTab && (
+                        <div className="w-full max-w-2xl space-y-8">
+                            {!showCreateTicket && !activeTicket && (
+                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] p-8 shadow-2xl">
+                                    <div className="flex justify-between items-center mb-6 border-b border-slate-800 pb-4">
+                                        <h1 className="text-xl font-black text-white tracking-widest italic uppercase">{HELPDESK_TABS.find(t => t.id === activeTab).label}</h1>
+                                        <div className="flex gap-2 items-center">
+                                            <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search ID..." className="bg-[#0b0e14] border border-slate-700 rounded-lg px-3 py-1.5 text-white text-[10px] font-bold uppercase tracking-widest outline-none focus:border-purple-500 w-32 md:w-48 transition-all placeholder:text-slate-600" />
+                                            <button onClick={loadDatabase} className="text-[9px] font-bold text-purple-500 border border-purple-500/20 px-3 py-1.5 rounded-lg uppercase hover:bg-purple-500/10">Refresh</button>
+                                            {userRole === "MANAGER" && <button onClick={() => setShowCreateTicket(true)} className="text-[9px] font-bold bg-purple-600 text-white px-3 py-1.5 rounded-lg uppercase hover:bg-purple-500">+ Ticket</button>}
+                                        </div>
+                                    </div>
+
+                                    {/* PENDING SYNC (Manager) — pending ticket creates + replies for this category */}
+                                    {userRole === "MANAGER" && pendingTicketsThisCategory.length > 0 && (
+                                        <div className="mb-6">
+                                            <h2 className="text-[10px] font-black text-purple-400 tracking-[0.2em] uppercase mb-4">🔔 Awaiting Approval ({pendingTicketsThisCategory.length})</h2>
+                                            {pendingTicketsThisCategory.map(item => <PendingCard key={item.id} item={item} accentColor="purple" />)}
+                                        </div>
+                                    )}
+
+                                    <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2 mt-2">Active Tickets</h2>
+                                    <div className="space-y-4 mb-8">
+                                        {filteredActiveTickets.length === 0 && pendingTicketsThisCategory.length === 0 && <p className="text-slate-500 text-xs italic text-center py-4">No active tickets.</p>}
+                                        {filteredActiveTickets.map((t, i) => {
+                                            const isVirtual = t._isVirtual;
+                                            const hasPendingReply = !isVirtual && pendingTicketReplies.some(p => String(p.payload.ticketId) === String(t.ticketId));
+                                            const showEdited = isVirtual && t._editedBadge && userRole !== "MANAGER";
+                                            return (
+                                                <div key={i} onClick={() => {
+                                                    if (showEdited) clearEditedBadge(t._pendingId);
+                                                    setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : "");
+                                                }} className={`bg-[#0b0e14] border ${hasPendingReply ? 'border-yellow-500/50' : 'border-slate-700'} hover:border-purple-500/50 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center group`}>
+                                                    <div><div className="flex items-center gap-3 mb-1 flex-wrap">
+                                                        <span className="text-white font-black text-sm">{t.orderId}</span>
+                                                        <span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span>
+                                                        {showEdited && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">✏️ Edited</span>}
+                                                        {hasPendingReply && userRole === "MANAGER" && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded-full pulse-ring">Pending Reply</span>}
+                                                    </div></div>
+                                                    <div className="text-right"><span className={`text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full ${t.status === 'Waiting on Supplier' ? 'bg-orange-500/20 text-orange-400' : 'bg-purple-500/20 text-purple-400'}`}>{t.status}</span></div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                    <h2 className="text-[10px] font-black text-slate-500 tracking-[0.2em] uppercase mb-4 ml-2 mt-8 border-t border-slate-800 pt-6">Ticket History (Closed)</h2>
+                                    <div className="space-y-4">
+                                        {paginatedTicketHistory.length === 0 && <p className="text-slate-600 text-xs italic text-center py-4">No history available.</p>}
+                                        {paginatedTicketHistory.map((t, i) => (
+                                            <div key={i} onClick={() => { setActiveTicket(t); setHdStatus(userRole !== "MANAGER" ? "Waiting on Agent" : ""); }} className="bg-[#0b0e14] border border-slate-800 hover:border-slate-600 rounded-2xl p-5 cursor-pointer transition-all flex justify-between items-center opacity-70 hover:opacity-100">
+                                                <div><div className="flex items-center gap-3 mb-1"><span className="text-slate-300 font-black text-sm">{t.orderId}</span><span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span></div></div>
+                                                <div className="text-right"><span className="text-[10px] font-black uppercase tracking-widest px-3 py-1 rounded-full bg-slate-800 text-slate-400">Closed</span></div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {renderPagination(ticketHistoryTotalPages)}
+                                </div>
+                            )}
+
+                            {showCreateTicket && userRole === "MANAGER" && (
+                                <div className="bg-[#161b22] border border-purple-500/30 rounded-[2rem] p-8 shadow-2xl animate-fade-in">
+                                    <h2 className="text-sm font-black text-purple-500 tracking-widest uppercase mb-6 flex justify-between items-center">Open New Ticket <button onClick={() => {setShowCreateTicket(false); resetHelpdeskForm();}} className="text-slate-500 hover:text-white">✕</button></h2>
+                                    <div className="space-y-4">
+                                        <input value={hdOrderId} onChange={(e) => setHdOrderId(e.target.value)} placeholder="ORDER ID *" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold uppercase"/>
+                                        <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm"><option value="" disabled>Initial Status *</option><option value="Open">Open</option><option value="Waiting on Supplier">Waiting on Supplier</option><option value="Closed">Closed</option></select>
+                                        <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Enter details..." rows="3" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
+                                        <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Related Links/URLs (Optional)" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-4 text-white outline-none focus:border-purple-500 font-bold text-sm"/>
+                                        <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="border-2 border-dashed border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]/50">
+                                            <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
+                                            {hdFiles.length > 0 ? <p className="text-purple-400 font-bold text-xs uppercase">{hdFiles.length} File(s) Attached</p> : <p className="text-slate-500 text-xs font-bold uppercase">Attach Files (PDF, JPG, PNG)</p>}
+                                        </div>
+                                        <button onClick={submitNewTicket} disabled={!hdOrderId || !hdStatus || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-4 rounded-xl font-black text-sm tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Request to Supplier'}</button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeTicket && (
+                                <div className="bg-[#161b22] border border-slate-800 rounded-[2rem] shadow-2xl flex flex-col h-[80vh] animate-fade-in">
+                                    <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-[#0b0e14] rounded-t-[2rem]">
+                                        <div><h2 className="text-white font-black text-xl">{activeTicket.orderId}</h2><p className="text-slate-400 text-xs font-bold">{activeTicket.category} • <span className="text-purple-400">{activeTicket.status}</span></p></div>
+                                        <button onClick={() => {setActiveTicket(null); resetHelpdeskForm();}} className="bg-slate-800 text-white px-4 py-2 rounded-full text-xs font-black uppercase hover:bg-slate-700">Back</button>
+                                    </div>
+                                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar bg-[#0b0e14]/30">
+                                        {activeThread.map((msg, i) => {
+                                            const isMe = msg.role === userRole;
+                                            return (
+                                                <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && userRole === "MANAGER" && <span className="text-yellow-400">• ⏳ Awaiting Approval</span>}</span>
+                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${msg._pending && userRole === "MANAGER" ? 'bg-yellow-500/10 border border-yellow-500/30 text-slate-200' : isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                                        {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
+                                                        {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
+                                                        {msg.files && msg.files.length > 0 && <div className="mt-3 flex gap-2 flex-wrap">{msg.files.map((url, idx) => <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>)}</div>}
+                                                        {msg._pending && userRole === "MANAGER" && (
+                                                            <div className="mt-3 pt-3 border-t border-yellow-500/20 flex gap-2">
+                                                                <button onClick={() => { const item = pending.find(p => p.id === msg._pendingId); if (item) { setSyncingItem(item); setSyncOverrides({}); }}} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Approve Reply</button>
+                                                                <button onClick={() => discardPending(msg._pendingId)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-3 py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">Discard</button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )
+                                        })}
+                                    </div>
+                                    <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
+                                            <div className="space-y-3">
+                                                <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
+                                                <div className="flex gap-3">
+                                                    <div className="flex-1">
+                                                        {userRole === "MANAGER" ? (
+                                                            <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"><option value="" disabled>Update Status *</option><option value="Open">Open</option><option value="Waiting on Supplier">Waiting on Supplier</option><option value="Closed">Closed</option></select>
+                                                        ) : (
+                                                            <select value={hdStatus} disabled className="w-full bg-[#0b0e14] border border-purple-500/50 rounded-xl p-3 text-purple-400 font-black text-xs opacity-80"><option value="Waiting on Agent">Status: Waiting on Agent</option></select>
+                                                        )}
+                                                    </div>
+                                                    <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
+                                                    <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="flex-1 border border-slate-700 rounded-xl p-3 flex items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]">
+                                                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
+                                                        <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
+                                                    </div>
+                                                </div>
+                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Reply'}</button>
+                                            </div>
+                                        </div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
