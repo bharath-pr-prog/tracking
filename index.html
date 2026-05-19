@@ -307,10 +307,36 @@
             //  HELPDESK — Create + Reply
             // ============================================================
             const submitNewTicket = async () => {
-                await submitToPending('ticket_create', {
-                    orderId: hdOrderId, category: activeTab, status: hdStatus,
-                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files
-                });
+                setStatus('syncing');
+                // First save the initial message directly to Communications with a temp refId
+                // We'll use orderId as the initial refId since pendingId isn't known yet
+                // The backend will return the pendingId and we save the message with that key
+                try {
+                    const res = await fetch(GOOGLE_SCRIPT_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            action: 'submit_pending',
+                            token,
+                            type: 'ticket_create',
+                            payload: { orderId: hdOrderId, category: activeTab, status: hdStatus, comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files }
+                        })
+                    });
+                    const result = await res.json();
+                    // Save the initial message to Communications keyed by the new pendingId
+                    if (result.pendingId && hdComment) {
+                        await postAction({
+                            action: 'send_message',
+                            token,
+                            refId: result.pendingId,
+                            comment: hdComment,
+                            links: hdLinks,
+                            ticketFiles: [],
+                            orderId: hdOrderId,
+                            category: activeTab
+                        });
+                    }
+                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
+                } catch(e) { setStatus('idle'); }
                 setShowCreateTicket(false); resetHelpdeskForm();
             };
 
@@ -318,38 +344,41 @@
             const sendMessage = async () => {
                 if (!hdComment && !hdLinks && hdBase64Files.length === 0) return;
                 setStatus('syncing');
-                const refId = activeTicket._isVirtual ? activeTicket.orderId : activeTicket.ticketId;
+                // Use _pendingId for virtual tickets so all messages share the same refId as the thread
+                const refId = activeTicket._isVirtual ? activeTicket._pendingId : activeTicket.ticketId;
+                const comment = hdComment;
+                const links = hdLinks;
                 try {
                     await postAction({
                         action: 'send_message',
                         token,
                         refId,
-                        comment: hdComment,
-                        links: hdLinks,
+                        comment,
+                        links,
                         ticketFiles: hdBase64Files,
-                        // Status update still goes through pending so Manager approves it
                         statusUpdate: hdStatus || null,
                         ticketId: activeTicket._isVirtual ? null : activeTicket.ticketId,
                         orderId: activeTicket.orderId,
                         category: activeTicket.category
                     });
-                    // Optimistically add message to local thread so it shows instantly
+                    // Optimistically add to local thread immediately so sender sees it right away
                     const newMsg = {
                         date: new Date().toISOString(),
                         refId,
                         author: userEmail,
                         role: userRole,
-                        comment: hdComment,
-                        links: hdLinks,
+                        comment,
+                        links,
                         files: [],
-                        _pending: false,
                         _optimistic: true
                     };
                     setCommunications(prev => [...prev, newMsg]);
+                    // Clear form and reset status immediately — don't block on loadDatabase
                     setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
-                    if (userRole !== "MANAGER") setHdStatus("Waiting on Agent");
-                    else setHdStatus('');
-                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
+                    setHdStatus('');
+                    setStatus('idle');
+                    // Sync sheet in background silently
+                    setTimeout(() => loadDatabase(), 2500);
                 } catch (e) { setStatus('idle'); }
             };
 
@@ -472,8 +501,10 @@
                 const threadKey = isVirtual ? activeTicket._pendingId : activeTicket.ticketId;
                 const messages = [];
 
-                // For virtual tickets, inject Manager's original request as first bubble
-                if (isVirtual) {
+                // For virtual tickets, inject Manager's original request as the first bubble
+                // only if there are no comms yet (avoids duplicate if manager's first msg already saved)
+                const existingComms = communications.filter(c => String(c.refId) === String(threadKey));
+                if (isVirtual && existingComms.length === 0 && activeTicket._managerComment) {
                     messages.push({
                         date: activeTicket.date,
                         refId: threadKey,
@@ -482,25 +513,13 @@
                         comment: activeTicket._managerComment || "",
                         links: activeTicket._managerLinks || "",
                         files: activeTicket._managerFiles || [],
-                        _pending: true,
                         _pendingId: activeTicket._pendingId,
                         _isManagerRequest: true
                     });
                 }
 
-                // Real communications (only for synced tickets)
-                if (!isVirtual) {
-                    communications.filter(c => String(c.refId) === String(activeTicket.ticketId)).forEach(c => messages.push({ ...c, _pending: false }));
-                }
-
-                // Pending replies (matched by either real ticketId or virtual pendingId)
-                pendingTicketReplies
-                    .filter(p => String(p.payload.ticketId) === String(threadKey))
-                    .forEach(p => messages.push({
-                        date: p.createdAt, refId: threadKey, author: p.createdBy, role: p.createdByRole,
-                        comment: p.payload.comment, links: p.payload.links, files: p.payload.ticketFiles || [],
-                        _pending: true, _pendingId: p.id, _pendingStatus: p.payload.status
-                    }));
+                // All saved Communications for this thread (real or virtual — both use threadKey as refId)
+                existingComms.forEach(c => messages.push({ ...c }));
 
                 return messages.sort((a,b) => new Date(a.date) - new Date(b.date));
             })() : [];
@@ -1140,7 +1159,7 @@
                                                     <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
                                                 </div>
                                             </div>
-                                            <button onClick={sendMessage} disabled={(!hdComment && !hdLinks && hdBase64Files.length === 0) || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Message'}</button>
+                                            <button onClick={sendMessage} disabled={!hdComment && !hdLinks && hdBase64Files.length === 0} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">Send Message</button>
                                         </div>
                                     </div>
                                 </div>
