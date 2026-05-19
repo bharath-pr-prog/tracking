@@ -2,154 +2,45 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Return Tracker Pro - Secure</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/tesseract.js@v5.0.2/dist/tesseract.min.js"></script>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
-    <style>
-        body { background-color: #0b0e14; color: #cbd5e1; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .custom-scrollbar::-webkit-scrollbar { height: 5px; width: 5px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: #0b0e14; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
-    </style>
 </head>
-<body>
+<body class="bg-[#0b0e14] text-white">
     <div id="root"></div>
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
-        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec"; 
-        const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com"; 
-        const ITEMS_PER_PAGE = 50; 
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec";
+        const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com";
 
         function App() {
-            const [isAuth, setIsAuth] = useState(false);
             const [token, setToken] = useState(null);
-            const [authError, setAuthError] = useState("");
-            const [userRole, setUserRole] = useState("SUPPLIER"); 
-            const [activeTab, setActiveTab] = useState('scanner'); 
-            const [dbRecords, setDbRecords] = useState([]);
-            const [tickets, setTickets] = useState([]); 
-            const [communications, setCommunications] = useState([]);
-            const [status, setStatus] = useState('idle');
-            const [searchQuery, setSearchQuery] = useState('');
-            const [currentPage, setCurrentPage] = useState(1);
 
-            useEffect(() => { setCurrentPage(1); }, [activeTab, searchQuery]);
-
-            // States for Forms
-            const [orderId, setOrderId] = useState('');
-            const [trackingNumber, setTrackingNumber] = useState(''); 
-            const [courier, setCourier] = useState(''); 
-            const [productCost, setProductCost] = useState('');
-            const [returnFee, setReturnFee] = useState('');
-            const [files, setFiles] = useState([]);
-            const [base64Images, setBase64Images] = useState([]);
-            const fileInputRef = useRef(null);
-
-            const [recallOrderId, setRecallOrderId] = useState('');
-            const [resolvingId, setResolvingId] = useState(null); 
-            
-            const [activeTicket, setActiveTicket] = useState(null);
-            const [hdFiles, setHdFiles] = useState([]);
-            const [hdBase64Files, setHdBase64Files] = useState([]);
-            const hdFileInputRef = useRef(null);
-
-            const HELPDESK_TABS = [
-                { id: "Tracking related issue", label: "Tracking" },
-                { id: "Damage claims replacement/reship request", label: "Damage Claims" },
-                { id: "General issues", label: "Issues" },
-                { id: "Order modification", label: "Order Mods" },
-                { id: "Refund request", label: "Refund Requests" } 
-            ];
-            const HELPDESK_CATEGORIES = HELPDESK_TABS.map(t => t.id);
-
-            const handleCredentialResponse = async (response) => {
-                const jwtToken = response.credential;
-                setAuthError("Verifying...");
-                try {
-                    const res = await fetch(`${GOOGLE_SCRIPT_URL}?token=${jwtToken}`);
-                    const data = await res.json();
-                    if (data.error) setAuthError(`Access Denied`);
-                    else {
-                        setToken(jwtToken);
-                        setUserRole(data.role ? data.role.toUpperCase() : "SUPPLIER");
-                        setDbRecords(Array.isArray(data.records) ? data.records : []);
-                        setTickets(Array.isArray(data.tickets) ? data.tickets : []);
-                        setCommunications(Array.isArray(data.communications) ? data.communications : []);
-                        setIsAuth(true);
-                    }
-                } catch (e) { setAuthError("Connection Failed."); }
-            };
+            const handleCredentialResponse = (res) => { setToken(res.credential); };
 
             useEffect(() => {
-                const renderButton = () => {
-                    if (window.google && document.getElementById("googleSignInDiv")) {
-                        window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleCredentialResponse });
-                        window.google.accounts.id.renderButton(document.getElementById("googleSignInDiv"), { theme: "outline", size: "large" });
-                    }
-                };
-                if (window.google) renderButton();
-                else { const timer = setInterval(() => { if (window.google) { clearInterval(timer); renderButton(); } }, 200); }
-            }, [isAuth]);
+                window.google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleCredentialResponse });
+                window.google.accounts.id.renderButton(document.getElementById("googleSignInDiv"), { theme: "outline", size: "large" });
+            }, []);
 
-            const loadDatabase = async () => {
-                if (!token) return;
-                try {
-                    const response = await fetch(`${GOOGLE_SCRIPT_URL}?token=${token}`);
-                    const data = await response.json();
-                    setDbRecords(data.records || []); setTickets(data.tickets || []); setCommunications(data.communications || []);
-                } catch (e) {}
+            const syncToSheet = async () => {
+                const payload = { action: "sync_to_sheet", token, orderId: "35", trackingNumber: "1234", courier: "FedEx", productCost: "10", returnFee: "2", refundAmount: "8", files: "None", status: "SYNCED" };
+                const res = await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'cors', body: JSON.stringify(payload) });
+                if(res.ok) alert("Synced to Sheet1!");
             };
 
-            const syncToSheet = async (orderId, track, courier, cost, fee, refund, files, status) => {
-                setStatus('syncing');
-                const payload = { action: "sync_to_sheet", token, orderId, trackingNumber: track, courier, productCost: cost, returnFee: fee, refundAmount: refund, files: files, status: status };
-                try {
-                    await fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
-                    setStatus('success'); setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1000);
-                } catch (e) { setStatus('idle'); }
-            };
+            if (!token) return <div className="p-10 flex justify-center"><div id="googleSignInDiv"></div></div>;
 
-            const renderPagination = (totalPages) => {
-                if (totalPages <= 1) return null;
-                return (
-                    <div className="flex justify-between items-center mt-6 bg-[#0b0e14] p-3 rounded-xl border border-slate-800">
-                        <button onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="px-5 py-2 bg-slate-800 text-slate-400 rounded-lg text-[10px] font-black uppercase disabled:opacity-30 hover:bg-slate-700 hover:text-white transition-all">Previous</button>
-                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Page {currentPage} of {totalPages}</span>
-                        <button onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="px-5 py-2 bg-slate-800 text-slate-400 rounded-lg text-[10px] font-black uppercase disabled:opacity-30 hover:bg-slate-700 hover:text-white transition-all">Next</button>
-                    </div>
-                );
-            };
-
-            if (!isAuth) return (
-                <div className="min-h-screen flex items-center justify-center p-6 bg-[#0b0e14]">
-                    <div id="googleSignInDiv"></div>
-                </div>
-            );
-
-            // ... (The rest of the UI code follows the same logic, 
-            // including the new "Sync to Sheet" button visible only for Managers)
-            
             return (
-                <div className="min-h-screen p-6 md:p-12 flex flex-col items-center gap-10">
-                    {/* ... (Navigation Bar) ... */}
-                    
-                    {/* EXAMPLE SYNC BUTTON LOGIC FOR MANAGER VIEW */}
-                    {userRole === "MANAGER" && (
-                        <button onClick={() => syncToSheet(orderId, trackingNumber, courier, productCost, returnFee, (productCost - returnFee).toFixed(2), files, 'SYNCED')} 
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-xl font-black text-xs uppercase tracking-widest">
-                            Sync to Sheet
-                        </button>
-                    )}
+                <div className="p-10">
+                    <button onClick={syncToSheet} className="bg-emerald-600 px-6 py-3 rounded-xl font-black uppercase">
+                        Sync to Sheet
+                    </button>
                 </div>
             );
         }
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
 </body>
 </html>
