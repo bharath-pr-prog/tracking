@@ -248,8 +248,19 @@
                     const data = await response.json();
                     if (Array.isArray(data.records)) setDbRecords(data.records);
                     if (Array.isArray(data.tickets)) setTickets(data.tickets);
-                    if (Array.isArray(data.communications)) setCommunications(data.communications);
                     if (Array.isArray(data.pending)) setPending(data.pending);
+                    if (Array.isArray(data.communications)) {
+                        // Merge: keep optimistic messages that haven't been confirmed yet
+                        setCommunications(prev => {
+                            const confirmed = data.communications;
+                            const optimistic = prev.filter(m => m._optimistic && !confirmed.some(c =>
+                                String(c.refId) === String(m.refId) &&
+                                String(c.comment) === String(m.comment) &&
+                                String(c.author) === String(m.author)
+                            ));
+                            return [...confirmed, ...optimistic];
+                        });
+                    }
                 } catch (e) {}
             };
 
@@ -649,11 +660,10 @@
                             </button>
                             <button onClick={() => switchTab('recalls')} className={`whitespace-nowrap px-4 font-black uppercase tracking-widest text-sm transition-all flex items-center gap-2 ${activeTab === 'recalls' ? 'text-orange-500 border-b-2 border-orange-500' : 'text-slate-600 hover:text-slate-400'}`}>
                                 Recalls
-                                {(allPendingRecalls.length + virtualPendingRecalls.length) > 0 && userRole !== "MANAGER" && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{allPendingRecalls.length + virtualPendingRecalls.length}</span>}
-                                {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length) > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecallInits.length + pendingRecallCompletes.length}</span>}
+                                {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length + allPendingRecalls.length) > 0 && <span className="bg-orange-500 text-white text-[10px] px-2 py-0.5 rounded-full">{pendingRecallInits.length + pendingRecallCompletes.length + allPendingRecalls.length}</span>}
                             </button>
                             {HELPDESK_TABS.map(tab => {
-                                const activeCount = tickets.filter(t => t.category === tab.id && ((userRole === "MANAGER" && t.status === "Waiting on Agent") || (userRole !== "MANAGER" && t.status === "Waiting on Supplier"))).length;
+                                const activeCount = userRole === "MANAGER" ? tickets.filter(t => t.category === tab.id && t.status === "Waiting on Agent").length : 0;
                                 const pendingCount = userRole === "MANAGER" ? pending.filter(p => (p.type === 'ticket_create' && p.payload.category === tab.id) || (p.type === 'ticket_reply' && p.payload.category === tab.id)).length : 0;
                                 const total = activeCount + pendingCount;
                                 return (
