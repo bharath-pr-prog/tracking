@@ -33,6 +33,100 @@
         // Helper: fire-and-forget POST (Apps Script CORS workaround)
         const postAction = (payload) => fetch(GOOGLE_SCRIPT_URL, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
 
+        // PendingCard defined outside App so React hooks work correctly
+        const PendingCard = ({ item, accentColor, userRole, userEmail, token, communications, setCommunications, loadDatabase, setSyncingItem, setSyncOverrides, setEditingPending, setEditForm, setEditBase64, setEditFiles, discardPending, isManagerRequestLocked }) => {
+            const p = item.payload || {};
+            const isMgr = userRole === "MANAGER";
+            const canEdit = isMgr && (item.type === 'recall_initiate' || item.type === 'ticket_create') && !isManagerRequestLocked(item);
+
+            const [cardReply, setCardReply] = React.useState('');
+            const [cardLinks, setCardLinks] = React.useState('');
+            const [cardSending, setCardSending] = React.useState(false);
+
+            const sendCardMessage = async () => {
+                if (!cardReply && !cardLinks) return;
+                setCardSending(true);
+                const msg = cardReply; const lnk = cardLinks;
+                try {
+                    await postAction({ action: 'send_message', token, refId: item.id, comment: msg, links: lnk, ticketFiles: [], orderId: p.orderId, category: p.category });
+                    setCommunications(prev => [...prev, { date: new Date().toISOString(), refId: item.id, author: userEmail, role: userRole, comment: msg, links: lnk, files: [], _optimistic: true }]);
+                    setCardReply(''); setCardLinks('');
+                    setTimeout(() => { setCardSending(false); loadDatabase(); }, 2000);
+                } catch(e) { setCardSending(false); }
+            };
+
+            const threadMsgs = [];
+            if (p.comment || (p.ticketFiles && p.ticketFiles.length > 0)) {
+                threadMsgs.push({ date: item.createdAt, author: item.createdBy, role: item.createdByRole, comment: p.comment || "", links: p.links || "", files: p.ticketFiles || [] });
+            }
+            communications.filter(c => String(c.refId) === String(item.id))
+                .sort((a,b) => new Date(a.date) - new Date(b.date))
+                .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
+
+            return (
+                <div className={`bg-[#0b0e14] border border-${accentColor}-500/30 rounded-2xl mb-3 animate-fade-in overflow-hidden`}>
+                    <div className="flex justify-between items-center px-5 pt-5 pb-3 border-b border-slate-800">
+                        <div>
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                                <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Approval</span>
+                                {item.editedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
+                            </div>
+                            <p className="text-white font-black text-sm">{p.orderId || "—"} {p.category && <span className="text-[10px] text-slate-500 font-bold ml-1">{p.category}</span>}</p>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase">{item.createdBy} • {new Date(item.createdAt).toLocaleString()}</p>
+                        </div>
+                    </div>
+                    {(p.trackingNumber || p.productCost) && (
+                        <div className="px-5 py-3 border-b border-slate-800 text-xs text-slate-300 space-y-1">
+                            {p.trackingNumber && p.trackingNumber !== "No Tracking" && <p><span className="text-slate-500 font-bold">Tracking:</span> {p.trackingNumber}</p>}
+                            {p.courier && p.courier !== "N/A" && <p><span className="text-slate-500 font-bold">Courier:</span> {p.courier}</p>}
+                            {p.productCost && <p><span className="text-slate-500 font-bold">Cost:</span> ${p.productCost} • <span className="text-slate-500 font-bold">Fee:</span> ${p.returnFee} • <span className="text-slate-500 font-bold">Refund:</span> ${p.refundAmount}</p>}
+                            {p.status && <p><span className="text-slate-500 font-bold">Status:</span> {p.status}</p>}
+                            {p.images && p.images.length > 0 && <div className="flex gap-2 flex-wrap">{p.images.map((url,i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">🏷️ {i+1}</a>)}</div>}
+                        </div>
+                    )}
+                    {threadMsgs.length > 0 && (
+                        <div className="px-5 py-4 space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
+                            {threadMsgs.map((msg, i) => {
+                                const isMe = msg.role === userRole;
+                                return (
+                                    <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                                        <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
+                                        <div className={`px-4 py-2.5 rounded-2xl max-w-[85%] text-sm ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                            {msg.comment && <p className="whitespace-pre-wrap font-medium">{msg.comment}</p>}
+                                            {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs underline mt-1 block break-all">{msg.links}</a>}
+                                            {msg.files && msg.files.length > 0 && <div className="mt-2 flex gap-1 flex-wrap">{msg.files.map((url,fi) => <a key={fi} href={url} target="_blank" className="bg-slate-900 px-2 py-0.5 rounded text-[10px] text-slate-300 hover:text-white">📎 {fi+1}</a>)}</div>}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                    {item.edits && item.edits.length > 0 && (
+                        <div className="mx-5 mb-3 p-2 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
+                            {item.edits.map((ed, i) => <p key={i} className="text-[10px] text-slate-400 italic">[{new Date(ed.editedAt).toLocaleString()}] {ed.editedBy}: {ed.changes.join("; ")}</p>)}
+                        </div>
+                    )}
+                    {isMgr && (
+                        <div className="px-5 pb-3 pt-3 border-t border-slate-800 space-y-2">
+                            <textarea value={cardReply} onChange={(e) => setCardReply(e.target.value)} placeholder="Reply to supplier..." rows="2" className="w-full bg-[#161b22] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs custom-scrollbar resize-none"/>
+                            <div className="flex gap-2">
+                                <input value={cardLinks} onChange={(e) => setCardLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#161b22] border border-slate-700 rounded-xl p-2.5 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
+                                <button onClick={sendCardMessage} disabled={!cardReply && !cardLinks} className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase disabled:opacity-30 transition-all">{cardSending ? 'Sending...' : '➤ Send'}</button>
+                            </div>
+                        </div>
+                    )}
+                    {!isMgr && <div className="px-5 pb-4 pt-2 border-t border-slate-800"><p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager approval...</p></div>}
+                    {isMgr && (
+                        <div className="flex gap-2 px-5 pb-5 pt-2 border-t border-slate-800">
+                            <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✓ Approve</button>
+                            {canEdit && <button onClick={() => { setEditingPending(item); setEditForm({ orderId: p.orderId||'', status: p.status||'', comment: p.comment||'', links: p.links||'' }); setEditFiles([]); setEditBase64([]); }} className="flex-1 bg-yellow-500/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-500/30 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✏️ Edit</button>}
+                            <button onClick={() => discardPending(item.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-4 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✕</button>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
         function App() {
             const [isAuth, setIsAuth] = useState(false);
             const [token, setToken] = useState(null);
@@ -541,167 +635,6 @@
                 );
             };
 
-            // Single pending card — unified chat thread + one Approve at bottom
-            const PendingCard = ({ item, accentColor }) => {
-                const p = item.payload || {};
-                const isMgr = userRole === "MANAGER";
-                const canEdit = isMgr && (item.type === 'recall_initiate' || item.type === 'ticket_create') && !isManagerRequestLocked(item);
-
-                // Local reply state per card
-                const [cardReply, setCardReply] = React.useState('');
-                const [cardLinks, setCardLinks] = React.useState('');
-                const [cardSending, setCardSending] = React.useState(false);
-
-                const sendCardMessage = async () => {
-                    if (!cardReply && !cardLinks) return;
-                    setCardSending(true);
-                    const msg = cardReply;
-                    const lnk = cardLinks;
-                    try {
-                        await postAction({
-                            action: 'send_message',
-                            token,
-                            refId: item.id,
-                            comment: msg,
-                            links: lnk,
-                            ticketFiles: [],
-                            orderId: p.orderId,
-                            category: p.category
-                        });
-                        // Optimistically add to communications
-                        setCommunications(prev => [...prev, {
-                            date: new Date().toISOString(),
-                            refId: item.id,
-                            author: userEmail,
-                            role: userRole,
-                            comment: msg,
-                            links: lnk,
-                            files: [],
-                            _optimistic: true
-                        }]);
-                        setCardReply(''); setCardLinks('');
-                        setTimeout(() => { setCardSending(false); loadDatabase(); }, 2000);
-                    } catch(e) { setCardSending(false); }
-                };
-
-                // Build unified thread: payload msg first, then all Communications for this item
-                const threadMsgs = [];
-                if (p.comment || (p.ticketFiles && p.ticketFiles.length > 0)) {
-                    threadMsgs.push({
-                        date: item.createdAt, author: item.createdBy, role: item.createdByRole,
-                        comment: p.comment || "", links: p.links || "", files: p.ticketFiles || []
-                    });
-                }
-                // All saved comms keyed by item.id
-                communications.filter(c => String(c.refId) === String(item.id))
-                    .sort((a,b) => new Date(a.date) - new Date(b.date))
-                    .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
-                    .forEach(c => threadMsgs.push({ date: c.date, author: c.author, role: c.role, comment: c.comment, links: c.links, files: c.files || [] }));
-
-                return (
-                    <div className={`bg-[#0b0e14] border border-${accentColor}-500/30 rounded-2xl mb-3 animate-fade-in overflow-hidden`}>
-                        {/* Header */}
-                        <div className="flex justify-between items-center px-5 pt-5 pb-3 border-b border-slate-800">
-                            <div>
-                                <div className="flex items-center gap-2 flex-wrap mb-1">
-                                    <span className={`text-[9px] font-black uppercase tracking-widest text-${accentColor}-400 bg-${accentColor}-500/10 px-2 py-1 rounded-full`}>Awaiting Approval</span>
-                                    {item.editedBadge && <span className="text-[9px] font-black uppercase tracking-widest text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-full pulse-ring">✏️ Edited</span>}
-                                </div>
-                                <p className="text-white font-black text-sm">{p.orderId || "—"} {p.category && <span className="text-[10px] text-slate-500 font-bold ml-1">{p.category}</span>}</p>
-                                <p className="text-[10px] text-slate-500 font-bold uppercase">{item.createdBy} • {new Date(item.createdAt).toLocaleString()}</p>
-                            </div>
-                        </div>
-
-                        {/* Structured data (tracking/costs) for recalls and standard */}
-                        {(p.trackingNumber || p.productCost) && (
-                            <div className="px-5 py-3 border-b border-slate-800 text-xs text-slate-300 space-y-1">
-                                {p.trackingNumber && p.trackingNumber !== "No Tracking" && <p><span className="text-slate-500 font-bold">Tracking:</span> {p.trackingNumber}</p>}
-                                {p.courier && p.courier !== "N/A" && <p><span className="text-slate-500 font-bold">Courier:</span> {p.courier}</p>}
-                                {p.productCost && <p><span className="text-slate-500 font-bold">Cost:</span> ${p.productCost} • <span className="text-slate-500 font-bold">Fee:</span> ${p.returnFee} • <span className="text-slate-500 font-bold">Refund:</span> ${p.refundAmount}</p>}
-                                {p.status && <p><span className="text-slate-500 font-bold">Status:</span> {p.status}</p>}
-                                {p.images && p.images.length > 0 && <div className="flex gap-2 flex-wrap">{p.images.map((url,i) => <a key={i} href={url} target="_blank" className="bg-slate-800 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">🏷️ Label {i+1}</a>)}</div>}
-                            </div>
-                        )}
-
-                        {/* Unified chat thread */}
-                        {threadMsgs.length > 0 && (
-                            <div className="px-5 py-4 space-y-3 max-h-64 overflow-y-auto custom-scrollbar">
-                                {threadMsgs.map((msg, i) => {
-                                    const isMe = msg.role === userRole;
-                                    return (
-                                        <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                            <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
-                                            <div className={`px-4 py-2.5 rounded-2xl max-w-[85%] text-sm ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
-                                                {msg.comment && <p className="whitespace-pre-wrap font-medium">{msg.comment}</p>}
-                                                {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs underline mt-1 block break-all">{msg.links}</a>}
-                                                {msg.files && msg.files.length > 0 && <div className="mt-2 flex gap-1 flex-wrap">{msg.files.map((url,fi) => <a key={fi} href={url} target="_blank" className="bg-slate-900 px-2 py-0.5 rounded text-[10px] text-slate-300 hover:text-white">📎 {fi+1}</a>)}</div>}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-
-                        {/* Edit history */}
-                        {item.edits && item.edits.length > 0 && (
-                            <div className="mx-5 mb-3 p-2 bg-yellow-500/5 border border-yellow-500/20 rounded-lg">
-                                {item.edits.map((ed, i) => (
-                                    <p key={i} className="text-[10px] text-slate-400 italic">[{new Date(ed.editedAt).toLocaleString()}] {ed.editedBy}: {ed.changes.join("; ")}</p>
-                                ))}
-                            </div>
-                        )}
-
-                        {/* Manager reply box — directly inside the card */}
-                        {isMgr && (
-                            <div className="px-5 pb-4 pt-3 border-t border-slate-800 space-y-2">
-                                <textarea
-                                    value={cardReply}
-                                    onChange={(e) => setCardReply(e.target.value)}
-                                    placeholder="Reply to supplier..."
-                                    rows="2"
-                                    className="w-full bg-[#161b22] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs custom-scrollbar resize-none"
-                                />
-                                <div className="flex gap-2">
-                                    <input
-                                        value={cardLinks}
-                                        onChange={(e) => setCardLinks(e.target.value)}
-                                        placeholder="Links (Opt)"
-                                        className="flex-1 bg-[#161b22] border border-slate-700 rounded-xl p-2.5 text-white outline-none focus:border-purple-500 font-bold text-xs"
-                                    />
-                                    <button
-                                        onClick={sendCardMessage}
-                                        disabled={!cardReply && !cardLinks}
-                                        className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase disabled:opacity-30 transition-all"
-                                    >{cardSending ? 'Sending...' : '➤ Send'}</button>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Manager actions — ONE Approve for the whole item */}
-                        {isMgr && (
-                            <div className="flex gap-2 px-5 pb-5 pt-3 border-t border-slate-800">
-                                <button onClick={() => { setSyncingItem(item); setSyncOverrides({}); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✓ Approve</button>
-                                {canEdit && (
-                                    <button onClick={() => {
-                                        setEditingPending(item);
-                                        setEditForm({ orderId: p.orderId || '', status: p.status || '', comment: p.comment || '', links: p.links || '' });
-                                        setEditFiles([]); setEditBase64([]);
-                                    }} className="flex-1 bg-yellow-500/20 border border-yellow-500 text-yellow-400 hover:bg-yellow-500/30 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✏️ Edit</button>
-                                )}
-                                <button onClick={() => discardPending(item.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-4 py-2.5 rounded-xl font-black text-[11px] tracking-widest uppercase transition-all">✕</button>
-                            </div>
-                        )}
-
-                        {/* Supplier view — just shows waiting */}
-                        {!isMgr && (
-                            <div className="px-5 pb-4 pt-2 border-t border-slate-800">
-                                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest italic">Waiting for Manager approval...</p>
-                            </div>
-                        )}
-                    </div>
-                );
-            };
-
             // ============================================================
             //  RENDER
             // ============================================================
@@ -912,13 +845,13 @@
                             {userRole === "MANAGER" && pendingStandard.length > 0 && (
                                 <div>
                                     <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingStandard.length})</h2>
-                                    {pendingStandard.map(item => <PendingCard key={item.id} item={item} accentColor="blue" />)}
+                                    {pendingStandard.map(item => <PendingCard key={item.id} item={item} accentColor="blue" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
                                 </div>
                             )}
                             {userRole !== "MANAGER" && pendingStandard.filter(p => p.createdBy === userEmail).length > 0 && (
                                 <div>
                                     <h2 className="text-[10px] font-black text-blue-400 tracking-[0.2em] uppercase mb-4 ml-2">⏳ My Pending Submissions ({pendingStandard.filter(p => p.createdBy === userEmail).length})</h2>
-                                    {pendingStandard.filter(p => p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="blue" />)}
+                                    {pendingStandard.filter(p => p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="blue" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
                                 </div>
                             )}
 
@@ -982,8 +915,8 @@
                             {userRole === "MANAGER" && (pendingRecallInits.length + pendingRecallCompletes.length) > 0 && (
                                 <div>
                                     <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">🔔 Awaiting Approval ({pendingRecallInits.length + pendingRecallCompletes.length})</h2>
-                                    {pendingRecallInits.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
-                                    {pendingRecallCompletes.map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
+                                    {pendingRecallInits.map(item => <PendingCard key={item.id} item={item} accentColor="orange" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
+                                    {pendingRecallCompletes.map(item => <PendingCard key={item.id} item={item} accentColor="orange" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
                                 </div>
                             )}
 
@@ -991,7 +924,7 @@
                             {userRole !== "MANAGER" && pending.filter(p => (p.type === 'recall_complete') && p.createdBy === userEmail).length > 0 && (
                                 <div>
                                     <h2 className="text-[10px] font-black text-orange-400 tracking-[0.2em] uppercase mb-4 ml-2">⏳ My Pending Submissions</h2>
-                                    {pending.filter(p => p.type === 'recall_complete' && p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="orange" />)}
+                                    {pending.filter(p => p.type === 'recall_complete' && p.createdBy === userEmail).map(item => <PendingCard key={item.id} item={item} accentColor="orange" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
                                 </div>
                             )}
 
@@ -1114,7 +1047,7 @@
                                     {userRole === "MANAGER" && pendingTicketsThisCategory.length > 0 && (
                                         <div className="mb-6">
                                             <h2 className="text-[10px] font-black text-purple-400 tracking-[0.2em] uppercase mb-4">🔔 Awaiting Approval ({pendingTicketsThisCategory.length})</h2>
-                                            {pendingTicketsThisCategory.map(item => <PendingCard key={item.id} item={item} accentColor="purple" />)}
+                                            {pendingTicketsThisCategory.map(item => <PendingCard key={item.id} item={item} accentColor="purple" userRole={userRole} userEmail={userEmail} token={token} communications={communications} setCommunications={setCommunications} loadDatabase={loadDatabase} setSyncingItem={setSyncingItem} setSyncOverrides={setSyncOverrides} setEditingPending={setEditingPending} setEditForm={setEditForm} setEditBase64={setEditBase64} setEditFiles={setEditFiles} discardPending={discardPending} isManagerRequestLocked={isManagerRequestLocked} />)}
                                         </div>
                                     )}
 
