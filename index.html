@@ -22,6 +22,7 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
+        // --- PASTE YOUR NEW APPS SCRIPT DEPLOYMENT URL HERE ---
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwUjnJd-Cf5UO9yRJn8bqBUarLi7ZHqngSwKsolwe93SKtqdNxkJtwLwJvFhYkRggy_/exec"; 
         const GOOGLE_CLIENT_ID = "1003946395665-5lclr3984nj3h2gacunplf45sa4lh4ej.apps.googleusercontent.com"; 
 
@@ -150,7 +151,7 @@
                 } catch (err) { setStatus('idle'); }
             };
 
-            // NEW MANAGER APPROVAL FUNCTION
+            // --- THE NEW MANAGER APPROVAL LOGIC ---
             const handleApproveRecord = async (recordId, recordType) => {
                 setStatus('syncing');
                 const payload = { action: "approve_record", token, recordId, recordType };
