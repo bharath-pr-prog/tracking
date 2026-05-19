@@ -314,16 +314,43 @@
                 setShowCreateTicket(false); resetHelpdeskForm();
             };
 
-            const submitTicketReply = async () => {
-                await submitToPending('ticket_reply', {
-                    ticketId: activeTicket.ticketId, orderId: activeTicket.orderId,
-                    category: activeTicket.category, status: hdStatus,
-                    comment: hdComment, links: hdLinks, ticketFiles: hdBase64Files
-                });
-                // Keep ticket open, just clear the form so user can continue chatting
-                setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
-                if (userRole !== "MANAGER") setHdStatus("Waiting on Agent");
-                else setHdStatus('');
+            // Direct message sender — writes straight to Communications sheet, no pending gate
+            const sendMessage = async () => {
+                if (!hdComment && !hdLinks && hdBase64Files.length === 0) return;
+                setStatus('syncing');
+                const refId = activeTicket._isVirtual ? activeTicket.orderId : activeTicket.ticketId;
+                try {
+                    await postAction({
+                        action: 'send_message',
+                        token,
+                        refId,
+                        comment: hdComment,
+                        links: hdLinks,
+                        ticketFiles: hdBase64Files,
+                        // Status update still goes through pending so Manager approves it
+                        statusUpdate: hdStatus || null,
+                        ticketId: activeTicket._isVirtual ? null : activeTicket.ticketId,
+                        orderId: activeTicket.orderId,
+                        category: activeTicket.category
+                    });
+                    // Optimistically add message to local thread so it shows instantly
+                    const newMsg = {
+                        date: new Date().toISOString(),
+                        refId,
+                        author: userEmail,
+                        role: userRole,
+                        comment: hdComment,
+                        links: hdLinks,
+                        files: [],
+                        _pending: false,
+                        _optimistic: true
+                    };
+                    setCommunications(prev => [...prev, newMsg]);
+                    setHdComment(''); setHdLinks(''); setHdFiles([]); setHdBase64Files([]);
+                    if (userRole !== "MANAGER") setHdStatus("Waiting on Agent");
+                    else setHdStatus('');
+                    setTimeout(() => { setStatus('idle'); loadDatabase(); }, 1500);
+                } catch (e) { setStatus('idle'); }
             };
 
             // ============================================================
@@ -540,6 +567,35 @@
                                 </div>
                             )}
                         </div>
+
+                        {/* Supplier replies to this pending ticket (keyed by item.id) */}
+                        {(() => {
+                            const linkedReplies = pending.filter(p => p.type === 'ticket_reply' && String(p.payload.ticketId) === String(item.id));
+                            if (linkedReplies.length === 0) return null;
+                            return (
+                                <div className="mt-3 pt-3 border-t border-slate-700 space-y-3">
+                                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">💬 Supplier Replies ({linkedReplies.length})</p>
+                                    {linkedReplies.map((reply, ri) => (
+                                        <div key={ri} className="bg-slate-800/50 border border-slate-700 rounded-xl p-3">
+                                            <p className="text-[9px] font-bold text-slate-500 uppercase mb-1">{reply.createdBy} ({reply.createdByRole}) • {new Date(reply.createdAt).toLocaleString()}</p>
+                                            {reply.payload.comment && <p className="text-xs text-slate-200 italic">"{reply.payload.comment}"</p>}
+                                            {reply.payload.links && <a href={reply.payload.links} target="_blank" className="text-[10px] text-blue-400 underline break-all block mt-1">{reply.payload.links}</a>}
+                                            {reply.payload.ticketFiles && reply.payload.ticketFiles.length > 0 && (
+                                                <div className="flex gap-2 flex-wrap mt-2">
+                                                    {reply.payload.ticketFiles.map((url, fi) => <a key={fi} href={url} target="_blank" className="bg-slate-900 px-2 py-1 rounded text-[10px] text-slate-300 hover:text-white">📎 File {fi+1}</a>)}
+                                                </div>
+                                            )}
+                                            {isMgr && (
+                                                <div className="flex gap-2 mt-2 pt-2 border-t border-slate-700">
+                                                    <button onClick={() => { setSyncingItem(reply); setSyncOverrides({}); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-1.5 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Approve Reply</button>
+                                                    <button onClick={() => discardPending(reply.id)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-3 py-1.5 rounded-lg font-black text-[10px] uppercase transition-all">✕</button>
+                                                </div>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            );
+                        })()}
 
                         {/* Edit history */}
                         {item.edits && item.edits.length > 0 && (
@@ -1056,42 +1112,37 @@
                                             const isMe = msg.role === userRole;
                                             return (
                                                 <div key={i} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()} {msg._pending && userRole === "MANAGER" && <span className="text-yellow-400">• ⏳ Awaiting Approval</span>}</span>
-                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${msg._pending && userRole === "MANAGER" ? 'bg-yellow-500/10 border border-yellow-500/30 text-slate-200' : isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wider">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
+                                                    <div className={`p-4 rounded-2xl max-w-[85%] ${isMe ? 'bg-purple-600/20 border border-purple-500/30 text-white' : 'bg-slate-800 border border-slate-700 text-slate-200'}`}>
                                                         {msg.comment && <p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
                                                         {msg.links && <a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
                                                         {msg.files && msg.files.length > 0 && <div className="mt-3 flex gap-2 flex-wrap">{msg.files.map((url, idx) => <a key={idx} href={url} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-300 hover:text-purple-400">📎 Attachment {idx + 1}</a>)}</div>}
-                                                        {msg._pending && userRole === "MANAGER" && (
-                                                            <div className="mt-3 pt-3 border-t border-yellow-500/20 flex gap-2">
-                                                                <button onClick={() => { const item = pending.find(p => p.id === msg._pendingId); if (item) { setSyncingItem(item); setSyncOverrides({}); }}} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">✓ Approve Reply</button>
-                                                                <button onClick={() => discardPending(msg._pendingId)} className="bg-red-500/20 border border-red-500 text-red-400 hover:bg-red-500/30 px-3 py-2 rounded-lg font-black text-[10px] tracking-widest uppercase transition-all">Discard</button>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </div>
                                             )
                                         })}
                                     </div>
                                     <div className="p-6 border-t border-slate-800 bg-[#161b22] rounded-b-[2rem]">
-                                            <div className="space-y-3">
-                                                <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type your reply..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
-                                                <div className="flex gap-3">
-                                                    <div className="flex-1">
-                                                        {userRole === "MANAGER" ? (
-                                                            <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"><option value="" disabled>Update Status *</option><option value="Open">Open</option><option value="Waiting on Supplier">Waiting on Supplier</option><option value="Closed">Closed</option></select>
-                                                        ) : (
-                                                            <select value={hdStatus} disabled className="w-full bg-[#0b0e14] border border-purple-500/50 rounded-xl p-3 text-purple-400 font-black text-xs opacity-80"><option value="Waiting on Agent">Status: Waiting on Agent</option></select>
-                                                        )}
-                                                    </div>
-                                                    <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
-                                                    <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="flex-1 border border-slate-700 rounded-xl p-3 flex items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]">
-                                                        <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
-                                                        <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
-                                                    </div>
+                                        <div className="space-y-3">
+                                            <textarea value={hdComment} onChange={(e) => setHdComment(e.target.value)} placeholder="Type a message..." rows="2" className="w-full bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-sm custom-scrollbar"></textarea>
+                                            <div className="flex gap-3">
+                                                {userRole === "MANAGER" && (
+                                                    <select value={hdStatus} onChange={(e) => setHdStatus(e.target.value)} className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs">
+                                                        <option value="">Status (optional)</option>
+                                                        <option value="Open">Open</option>
+                                                        <option value="Waiting on Supplier">Waiting on Supplier</option>
+                                                        <option value="Closed">Closed</option>
+                                                    </select>
+                                                )}
+                                                <input value={hdLinks} onChange={(e) => setHdLinks(e.target.value)} placeholder="Links (Opt)" className="flex-1 bg-[#0b0e14] border border-slate-700 rounded-xl p-3 text-white outline-none focus:border-purple-500 font-bold text-xs"/>
+                                                <div onClick={() => status !== 'reading_files' && hdFileInputRef.current.click()} className="flex-1 border border-slate-700 rounded-xl p-3 flex items-center justify-center cursor-pointer hover:border-purple-500 bg-[#0b0e14]">
+                                                    <input type="file" multiple accept=".jpg,.jpeg,.png,.pdf" ref={hdFileInputRef} onChange={(e) => processFiles(e, setHdFiles, setHdBase64Files)} className="hidden" />
+                                                    <span className="text-slate-400 text-xs font-bold uppercase">{hdFiles.length > 0 ? `${hdFiles.length} Files` : '📎 Attach'}</span>
                                                 </div>
-                                                <button onClick={submitTicketReply} disabled={(!hdStatus && userRole === "MANAGER") || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Reply'}</button>
                                             </div>
+                                            <button onClick={sendMessage} disabled={(!hdComment && !hdLinks && hdBase64Files.length === 0) || status === 'syncing'} className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-xl font-black text-xs tracking-widest uppercase disabled:opacity-30 transition-all">{status === 'syncing' ? 'Sending...' : 'Send Message'}</button>
                                         </div>
+                                    </div>
                                 </div>
                             )}
                         </div>
