@@ -52,8 +52,8 @@ const PendingCard = ({item,accentColor,userRole,userEmail,token,communications,s
         setCardSending(true);
         const msg=cardReply,lnk=cardLinks;
         try {
-            await post({action:'send_message',token,refId:item.id,comment:msg,links:lnk,ticketFiles:[],orderId:p.orderId,category:p.category});
-            setCommunications(prev=>[...prev,{date:new Date().toISOString(),refId:item.id,author:userEmail,role:userRole,comment:msg,links:lnk,files:[],_optimistic:true}]);
+            await post({action:'send_message',token,refId:p.orderId,comment:msg,links:lnk,ticketFiles:[],orderId:p.orderId,category:p.category});
+            setCommunications(prev=>[...prev,{date:new Date().toISOString(),refId:p.orderId,author:userEmail,role:userRole,comment:msg,links:lnk,files:[],_optimistic:true}]);
             setCardReply('');setCardLinks('');
             setTimeout(()=>{setCardSending(false);loadDatabase();},2000);
         }catch(e){setCardSending(false);}
@@ -61,7 +61,7 @@ const PendingCard = ({item,accentColor,userRole,userEmail,token,communications,s
     const threadMsgs=[];
     if(p.comment||(p.ticketFiles&&p.ticketFiles.length>0))
         threadMsgs.push({date:item.createdAt,author:item.createdBy,role:item.createdByRole,comment:p.comment||"",links:p.links||"",files:p.ticketFiles||[]});
-    communications.filter(c=>String(c.refId)===String(item.id))
+    communications.filter(c=>String(c.refId)===String(p.orderId))
         .sort((a,b)=>new Date(a.date)-new Date(b.date))
         .forEach(c=>threadMsgs.push({date:c.date,author:c.author,role:c.role,comment:c.comment,links:c.links,files:c.files||[]}));
 
@@ -324,7 +324,7 @@ function App() {
             const res=await fetch(GS_URL,{method:'POST',body:JSON.stringify({action:'submit_pending',token,type:'ticket_create',payload})});
             const result=await res.json();
             if(result.pendingId&&hdComment){
-                await post({action:'send_message',token,refId:result.pendingId,comment:hdComment,links:hdLinks,ticketFiles:[],orderId:hdOrderId,category:activeTab});
+                await post({action:'send_message',token,refId:hdOrderId,comment:hdComment,links:hdLinks,ticketFiles:[],orderId:hdOrderId,category:activeTab});
             }
             setTimeout(()=>{setStatus('idle');loadDatabase();},1500);
         }catch(e){setStatus('idle');}
@@ -333,7 +333,7 @@ function App() {
 
     const sendMessage=async()=>{
         if(!hdComment&&!hdLinks&&hdBase64Files.length===0)return;
-        const refId=activeTicket._isVirtual?activeTicket._pendingId:activeTicket.ticketId;
+        const refId=activeTicket.orderId;
         const comment=hdComment,links=hdLinks;
         try{
             await post({action:'send_message',token,refId,comment,links,ticketFiles:hdBase64Files,orderId:activeTicket.orderId,category:activeTicket.category});
@@ -384,10 +384,11 @@ function App() {
     const runSearch=(q)=>{
         if(!q.trim())return;
         const oid=q.trim().toLowerCase();
-        const msgs=communications.filter(c=>String(c.refId).toLowerCase().includes(oid)||String(c.comment).toLowerCase().includes(oid));
-        const recs=dbRecords.filter(r=>String(r.orderId).toLowerCase().includes(oid)||String(r.trackingNumber).toLowerCase().includes(oid));
-        const tix=tickets.filter(t=>String(t.orderId).toLowerCase().includes(oid)||String(t.ticketId).toLowerCase().includes(oid));
-        setSearchResult({query:q,messages:msgs,records:recs,tickets:tix});
+        // Messages: match by refId (which is now always orderId)
+        const msgs=communications.filter(c=>String(c.refId).toLowerCase()===oid);
+        const recs=dbRecords.filter(r=>String(r.orderId).toLowerCase()===oid||String(r.trackingNumber).toLowerCase().includes(oid));
+        const tix=tickets.filter(t=>String(t.orderId).toLowerCase()===oid);
+        setSearchResult({query:q.trim(),messages:msgs,records:recs,tickets:tix});
     };
 
     if(!isAuth)return(
@@ -424,11 +425,10 @@ function App() {
     const pendingTicketsThisCategory=pendingTicketCreates.filter(p=>p.payload.category===activeTab);
 
     const activeThread=activeTicket?(()=>{
-        const isVirtual=activeTicket._isVirtual;
-        const threadKey=isVirtual?activeTicket._pendingId:activeTicket.ticketId;
+        const threadKey=activeTicket.orderId;
         const msgs=[];
         const existingComms=communications.filter(c=>String(c.refId)===String(threadKey));
-        if(isVirtual&&existingComms.length===0&&activeTicket._managerComment)
+        if(activeTicket._isVirtual&&existingComms.length===0&&activeTicket._managerComment)
             msgs.push({date:activeTicket.date,refId:threadKey,author:activeTicket.createdBy,role:"MANAGER",comment:activeTicket._managerComment||"",links:activeTicket._managerLinks||"",files:activeTicket._managerFiles||[]});
         existingComms.forEach(c=>msgs.push({...c}));
         return msgs.sort((a,b)=>new Date(a.date)-new Date(b.date));
@@ -553,69 +553,66 @@ function App() {
                 </div>
                 {searchResult&&(
                 <div className="space-y-6 animate-fade-in">
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Results for "{searchResult.query}" — {searchResult.records.length} records, {searchResult.tickets.length} tickets, {searchResult.messages.length} messages</p>
+                    {/* Summary bar */}
+                    <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Order ID: <span className="text-white">{searchResult.query}</span></p>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase">{searchResult.messages.length} messages • {searchResult.records.length} records • {searchResult.tickets.length} tickets</p>
+                    </div>
 
-                    {/* Records */}
+                    {/* Order / Return record info if exists */}
                     {searchResult.records.length>0&&(
-                    <div>
-                        <h2 className="text-[10px] font-black text-blue-400 uppercase tracking-widest mb-3">Return Records ({searchResult.records.length})</h2>
-                        <div className="space-y-3">
-                            {searchResult.records.map((rec,i)=>(
-                            <div key={i} className="bg-[#0b0e14] border border-slate-700 rounded-2xl p-4">
-                                <div className="flex justify-between items-start">
-                                    <div><p className="text-white font-black text-sm">{rec.orderId}</p><p className="text-[10px] text-slate-400 uppercase">{rec.courier} • {rec.trackingNumber}</p></div>
-                                    <div className="flex items-center gap-2">
-                                        <p className="text-blue-400 font-black">${rec.refundAmount}</p>
-                                        {rec.link&&rec.link!=="No Image"&&<button onClick={()=>downloadFiles(rec.link)} className="bg-blue-500/20 border border-blue-500 text-blue-400 hover:bg-blue-500/30 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all">⬇ Download</button>}
-                                    </div>
-                                </div>
-                            </div>))}
-                        </div>
+                    <div className="space-y-2">
+                        {searchResult.records.map((rec,i)=>(
+                        <div key={i} className="bg-[#0b0e14] border border-slate-700 rounded-2xl p-4 flex justify-between items-center">
+                            <div>
+                                <p className="text-white font-black text-sm">{rec.orderId} <span className="text-[9px] text-slate-500 ml-2 uppercase">{rec.courier} • {rec.trackingNumber}</span></p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">Refund: <span className="text-blue-400 font-bold">${rec.refundAmount}</span> • {new Date(rec.timestamp).toLocaleDateString()}</p>
+                            </div>
+                            {rec.link&&rec.link!=="No Image"&&<button onClick={()=>downloadFiles(rec.link)} className="bg-blue-500/20 border border-blue-500 text-blue-400 hover:bg-blue-500/30 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all">⬇ Label</button>}
+                        </div>))}
                     </div>)}
 
-                    {/* Tickets */}
+                    {/* Ticket info if exists */}
                     {searchResult.tickets.length>0&&(
-                    <div>
-                        <h2 className="text-[10px] font-black text-purple-400 uppercase tracking-widest mb-3">Tickets ({searchResult.tickets.length})</h2>
-                        <div className="space-y-3">
-                            {searchResult.tickets.map((t,i)=>{
-                                const thread=communications.filter(c=>String(c.refId)===String(t.ticketId)).sort((a,b)=>new Date(a.date)-new Date(b.date));
+                    <div className="space-y-2">
+                        {searchResult.tickets.map((t,i)=>(
+                        <div key={i} className="bg-[#0b0e14] border border-slate-700 rounded-xl px-4 py-2 flex justify-between items-center">
+                            <p className="text-[10px] text-slate-400 uppercase">{t.category} <span className="text-slate-600 font-mono ml-2">{t.ticketId}</span></p>
+                            <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-full ${t.status==='Closed'?'bg-slate-800 text-slate-400':t.status==='Waiting on Supplier'?'bg-orange-500/20 text-orange-400':'bg-purple-500/20 text-purple-400'}`}>{t.status}</span>
+                        </div>))}
+                    </div>)}
+
+                    {/* Full unified conversation — all messages for this order ID */}
+                    {searchResult.messages.length>0?(
+                    <div className="bg-[#0b0e14] border border-slate-800 rounded-2xl overflow-hidden">
+                        <div className="px-4 py-3 border-b border-slate-800">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Full Conversation ({searchResult.messages.length} messages)</p>
+                        </div>
+                        <div className="p-4 space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar">
+                            {searchResult.messages.sort((a,b)=>new Date(a.date)-new Date(b.date)).map((msg,i)=>{
+                                const isMe=msg.role===userRole;
                                 return(
-                                <div key={i} className="bg-[#0b0e14] border border-slate-700 rounded-2xl p-4">
-                                    <div className="flex justify-between items-center mb-3">
-                                        <div><p className="text-white font-black text-sm">{t.orderId} <span className="text-slate-500 text-[10px] font-mono">{t.ticketId}</span></p><p className="text-[10px] text-slate-400 uppercase">{t.category}</p></div>
-                                        <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-full ${t.status==='Closed'?'bg-slate-800 text-slate-400':t.status==='Waiting on Supplier'?'bg-orange-500/20 text-orange-400':'bg-purple-500/20 text-purple-400'}`}>{t.status}</span>
+                                <div key={i} className={`flex flex-col ${isMe?'items-end':'items-start'}`}>
+                                    <span className="text-[9px] font-bold text-slate-500 mb-1 uppercase tracking-wide">{msg.role} • {new Date(msg.date).toLocaleString()}</span>
+                                    <div className={`px-4 py-3 rounded-2xl max-w-[80%] ${isMe?'bg-purple-600/20 border border-purple-500/30 text-white':'bg-slate-800 border border-slate-700 text-slate-200'}`}>
+                                        {msg.comment&&<p className="text-sm font-medium whitespace-pre-wrap">{msg.comment}</p>}
+                                        {msg.links&&<a href={msg.links} target="_blank" className="text-blue-400 text-xs font-bold underline mt-2 block break-all">{msg.links}</a>}
+                                        {msg.files&&msg.files.length>0&&(
+                                        <div className="mt-2 flex gap-2 flex-wrap">
+                                            {msg.files.map((u,fi)=>(
+                                            <div key={fi} className="flex items-center gap-1">
+                                                <a href={u} target="_blank" className="bg-[#0b0e14] border border-slate-700 px-2 py-1 rounded-lg text-[10px] text-slate-300 hover:text-white">📎 File {fi+1}</a>
+                                                <button onClick={()=>downloadFiles(u)} className="text-blue-400 hover:text-blue-300 text-[10px]">⬇</button>
+                                            </div>))}
+                                        </div>)}
                                     </div>
-                                    {thread.length>0&&(
-                                    <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar border-t border-slate-800 pt-3">
-                                        {thread.map((msg,mi)=>(
-                                        <div key={mi} className={`flex flex-col ${msg.role===userRole?'items-end':'items-start'}`}>
-                                            <span className="text-[9px] text-slate-500 mb-0.5 uppercase">{msg.role} • {new Date(msg.date).toLocaleDateString()}</span>
-                                            <div className={`px-3 py-2 rounded-xl max-w-[85%] text-xs ${msg.role===userRole?'bg-purple-600/20 border border-purple-500/30 text-white':'bg-slate-800 border border-slate-700 text-slate-200'}`}>
-                                                {msg.comment&&<p>{msg.comment}</p>}
-                                                {msg.links&&<a href={msg.links} target="_blank" className="text-blue-400 underline block break-all">{msg.links}</a>}
-                                                {msg.files&&msg.files.length>0&&<div className="mt-1 flex gap-1 flex-wrap">{msg.files.map((u,fi)=><><a key={fi} href={u} target="_blank" className="text-slate-400 hover:text-white">📎 {fi+1}</a><button onClick={()=>downloadFiles(u)} className="text-blue-400 hover:text-blue-300 text-[10px]">⬇</button></>)}</div>}
-                                            </div>
-                                        </div>))}
-                                    </div>)}
                                 </div>);
                             })}
                         </div>
-                    </div>)}
-
-                    {/* Raw messages */}
-                    {searchResult.messages.length>0&&searchResult.tickets.length===0&&(
-                    <div>
-                        <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Messages ({searchResult.messages.length})</h2>
-                        <div className="space-y-2 max-h-64 overflow-y-auto custom-scrollbar">
-                            {searchResult.messages.map((msg,i)=>(
-                            <div key={i} className="bg-[#0b0e14] border border-slate-700 rounded-xl p-3">
-                                <p className="text-[9px] text-slate-500 uppercase mb-1">{msg.role} • {new Date(msg.date).toLocaleDateString()} • Ref: {msg.refId}</p>
-                                {msg.comment&&<p className="text-xs text-slate-200">{msg.comment}</p>}
-                                {msg.links&&<a href={msg.links} target="_blank" className="text-blue-400 text-xs underline break-all">{msg.links}</a>}
-                                {msg.files&&msg.files.length>0&&<div className="flex gap-2 mt-1">{msg.files.map((u,fi)=><button key={fi} onClick={()=>downloadFiles(u)} className="text-blue-400 text-[10px] hover:text-blue-300">⬇ File {fi+1}</button>)}</div>}
-                            </div>))}
-                        </div>
+                    </div>
+                    ):(
+                    <div className="bg-[#0b0e14] border border-slate-800 rounded-2xl p-6 text-center">
+                        <p className="text-slate-500 text-xs italic">No messages found for order ID "{searchResult.query}"</p>
                     </div>)}
 
                     {searchResult.records.length===0&&searchResult.tickets.length===0&&searchResult.messages.length===0&&(
@@ -853,7 +850,7 @@ function App() {
                         <div className="flex items-center gap-2">
                             <span className="text-[10px] font-black uppercase px-3 py-1 rounded-full bg-slate-800 text-slate-400">Closed</span>
                             {/* Download button in history */}
-                            {(()=>{const comms=communications.filter(c=>String(c.refId)===String(t.ticketId));const filesExist=comms.some(c=>c.files&&c.files.length>0);return filesExist?<button onClick={e=>{e.stopPropagation();const allFiles=comms.flatMap(c=>c.files||[]);downloadFiles(allFiles.join(" , "));}} className="bg-purple-500/20 border border-purple-500 text-purple-400 hover:bg-purple-500/30 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all">⬇</button>:null;})()}
+                            {(()=>{const comms=communications.filter(c=>String(c.refId)===String(t.orderId));const filesExist=comms.some(c=>c.files&&c.files.length>0);return filesExist?<button onClick={e=>{e.stopPropagation();const allFiles=comms.flatMap(c=>c.files||[]);downloadFiles(allFiles.join(" , "));}} className="bg-purple-500/20 border border-purple-500 text-purple-400 hover:bg-purple-500/30 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all">⬇</button>:null;})()}
                         </div>
                     </div>))}
                 </div>
